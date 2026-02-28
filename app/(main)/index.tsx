@@ -18,8 +18,8 @@ const SKILLS = [
   { key: 'strength',  label: 'Strength',          desc: 'Physical power & endurance'   },
   { key: 'vitality',  label: 'Vitality',          desc: 'Health & resilience'           },
   { key: 'tech',      label: 'Tech',              desc: 'Gadgets & digital mastery'     },
-  { key: 'detective', label: 'Detective Skills',  desc: 'Observation & deduction'       },
-  { key: 'special',   label: 'Special Ability',   desc: 'A power unique to you'         },
+  { key: 'intelligence', label: 'Intelligence',  desc: 'Observation & deduction'       },
+  { key: 'speed',        label: 'Speed',         desc: 'Agility & quick reflexes'       },
 ] as const;
 
 type SkillKey = typeof SKILLS[number]['key'];
@@ -30,7 +30,7 @@ type Gender = typeof GENDERS[number];
 
 const ZERO_SKILLS: SkillMap = {
   charisma: 0, strength: 0, vitality: 0,
-  tech: 0, detective: 0, special: 0,
+  tech: 0, intelligence: 0, speed: 0,
 };
 
 export default function CharacterCreationScreen() {
