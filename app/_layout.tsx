@@ -20,10 +20,13 @@ export default function RootLayout() {
     SplashScreen.hideAsync();
 
     const inAuthGroup = segments[0] === '(auth)';
+    const inMainGroup = segments[0] === '(main)';
     const navigate = () => {
       if (!user && !inAuthGroup) {
+        // Not logged in → go to login
         router.replace('/(auth)/login');
-      } else if (user && inAuthGroup) {
+      } else if (user && !inMainGroup) {
+        // Logged in but not yet on main (covers splash + auth screens) → go to main
         router.replace('/(main)');
       }
     };
