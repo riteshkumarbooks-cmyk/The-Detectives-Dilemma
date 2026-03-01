@@ -1,11 +1,7 @@
 import { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import * as SplashScreen from 'expo-splash-screen';
 import { useAuth } from '@/hooks/useAuth';
-
-// Keep the native splash screen visible while we check auth state
-SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const { user, loading } = useAuth();
@@ -14,10 +10,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (loading) return;
-
-    // Hide Expo Go's native loading screen, then show app/index.tsx (splash image)
-    // for a brief moment before navigating.
-    SplashScreen.hideAsync();
+    // app/index.tsx shows splash.png for 1500 ms, then navigate
 
     const inAuthGroup = segments[0] === '(auth)';
     const inMainGroup = segments[0] === '(main)';
