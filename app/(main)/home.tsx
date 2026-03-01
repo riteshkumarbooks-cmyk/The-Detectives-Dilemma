@@ -13,6 +13,8 @@ import {
 import { DeviceMotion } from 'expo-sensors';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, getDoc, updateDoc, deleteField } from 'firebase/firestore';
+import { db } from '@/config/firebase';
 import { Colors } from '@/constants/colors';
 import { signOut } from '@/services/auth';
 import { useAuth } from '@/hooks/useAuth';
@@ -124,17 +126,33 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    AsyncStorage.getItem(profileKey).then(async pData => {
-      if (!pData) return;
-      const p: CharacterProfile = JSON.parse(pData);
-      setProfile(p);
+    async function loadProfile() {
+      // 1. Try local cache first (instant)
+      const cached = await AsyncStorage.getItem(profileKey);
+      if (cached) {
+        const p: CharacterProfile = JSON.parse(cached);
+        setProfile(p);
+        const resolved = resolveCharacter(p.gender, p.age);
+        await AsyncStorage.setItem(characterKey, resolved);
+        setSelectedId(resolved);
+        return;
+      }
 
-      // Auto-assign character from gender + age; persist so it survives re-renders
-      const resolved = resolveCharacter(p.gender, p.age);
+      // 2. Cache miss (new device or cleared storage) — fetch from Firestore
+      if (!user?.uid) return;
+      const snap = await getDoc(doc(db, 'users', user.uid));
+      const remote = snap.data()?.character as CharacterProfile | undefined;
+      if (!remote) return;
+
+      // Hydrate local cache from Firestore so next load is instant
+      await AsyncStorage.setItem(profileKey, JSON.stringify(remote));
+      setProfile(remote);
+      const resolved = resolveCharacter(remote.gender, remote.age);
       await AsyncStorage.setItem(characterKey, resolved);
       setSelectedId(resolved);
-    });
-  }, [profileKey, characterKey]);
+    }
+    loadProfile();
+  }, [profileKey, characterKey, user?.uid]);
 
   // ── Profile reset ─────────────────────────────────────────────────────────
   function handleReset() {
@@ -148,6 +166,9 @@ export default function HomeScreen() {
           style: 'destructive',
           onPress: async () => {
             await AsyncStorage.multiRemove([profileKey, characterKey]);
+            if (user?.uid) {
+              await updateDoc(doc(db, 'users', user.uid), { character: deleteField() });
+            }
             setShowProfile(false);
             router.replace('/(main)');
           },

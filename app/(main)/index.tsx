@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '@/config/firebase';
 import { Colors } from '@/constants/colors';
 import { signOut } from '@/services/auth';
 import { useAuth } from '@/hooks/useAuth';
@@ -88,6 +90,16 @@ export default function CharacterCreationScreen() {
     };
 
     await AsyncStorage.setItem(profileKey, JSON.stringify(profile));
+
+    // Persist to Firestore so it survives device changes and is available for episode reviews
+    if (user?.uid) {
+      await setDoc(
+        doc(db, 'users', user.uid),
+        { character: { ...profile, updatedAt: serverTimestamp() } },
+        { merge: true },
+      );
+    }
+
     router.replace('/(main)/home');
   }
 
