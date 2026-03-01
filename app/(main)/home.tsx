@@ -1,16 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Image,
-  ImageBackground,
+  Animated,
   TouchableOpacity,
   Modal,
   Alert,
   Dimensions,
   SafeAreaView,
 } from 'react-native';
+import { DeviceMotion } from 'expo-sensors';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '@/constants/colors';
@@ -102,6 +102,27 @@ export default function HomeScreen() {
   const [selectedId,   setSelectedId]   = useState<CharacterId | null>(null);
   const [showProfile,  setShowProfile]  = useState(false);
 
+  // ── Parallax depth refs ────────────────────────────────────────────────────
+  const bgShift   = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const charShift = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+
+  useEffect(() => {
+    let sub: ReturnType<typeof DeviceMotion.addListener> | null = null;
+    DeviceMotion.isAvailableAsync().then(available => {
+      if (!available) return;
+      DeviceMotion.setUpdateInterval(50);
+      sub = DeviceMotion.addListener(({ rotation }) => {
+        if (!rotation) return;
+        // gamma = left/right tilt, beta = front/back tilt (radians → degrees)
+        const tiltX = Math.max(-15, Math.min(15, (rotation.gamma ?? 0) * (180 / Math.PI)));
+        const tiltY = Math.max(-15, Math.min(15, (rotation.beta  ?? 0) * (180 / Math.PI)));
+        Animated.spring(bgShift,   { toValue: { x: tiltX * 0.3, y: tiltY * 0.3 }, useNativeDriver: true, damping: 20, stiffness: 80 }).start();
+        Animated.spring(charShift, { toValue: { x: tiltX * 1.0, y: tiltY * 1.0 }, useNativeDriver: true, damping: 20, stiffness: 80 }).start();
+      });
+    });
+    return () => { sub?.remove(); };
+  }, []);
+
   useEffect(() => {
     AsyncStorage.getItem(profileKey).then(async pData => {
       if (!pData) return;
@@ -140,13 +161,26 @@ export default function HomeScreen() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <ImageBackground
-      source={require('../../assets/office-bg.png')}
-      style={styles.bg}
-      resizeMode="cover"
-    >
-      {/* Dark overlay so UI stays readable */}
+    <View style={styles.bg}>
+      {/* Background — moves subtly on tilt (far layer) */}
+      <Animated.Image
+        source={require('../../assets/office-bg.png')}
+        style={[styles.bgImage, { transform: bgShift.getTranslateTransform() }]}
+        resizeMode="cover"
+      />
+
+      {/* Dark overlay */}
       <View style={styles.overlay} />
+
+      {/* Character — moves more on tilt (near layer) */}
+      {selectedChar && (
+        <Animated.Image
+          source={selectedChar.image}
+          style={[styles.characterStanding, { transform: charShift.getTranslateTransform() }]}
+          resizeMode="contain"
+          pointerEvents="none"
+        />
+      )}
 
       <SafeAreaView style={styles.safe}>
 
@@ -162,16 +196,6 @@ export default function HomeScreen() {
         </View>
 
       </SafeAreaView>
-
-      {/* Character standing in the scene — absolutely over the background */}
-      {selectedChar && (
-        <Image
-          source={selectedChar.image}
-          style={styles.characterStanding}
-          resizeMode="contain"
-          pointerEvents="none"
-        />
-      )}
 
       {/* Bottom nameplate overlay */}
       {profile && (
@@ -225,7 +249,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
       </Modal>
-    </ImageBackground>
+    </View>
   );
 }
 
@@ -247,8 +271,10 @@ const rowStyles = StyleSheet.create({
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  bg:      { flex: 1 },
-  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
+  bg:      { flex: 1, backgroundColor: '#0D0D0D', overflow: 'hidden' },
+  // Slightly oversized so parallax shift doesn't reveal edges
+  bgImage: { position: 'absolute', width: SW * 1.1, height: SH * 1.1, top: -SH * 0.05, left: -SW * 0.05 },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
   safe:    { flex: 1 },
 
   // Top bar
