@@ -183,24 +183,43 @@ users/{uid}
     wrongGuesses:     number
     updatedAt:        Timestamp
   }
-  relationships: [              ← GLOBAL across all clients, grows with gameplay
+  relationships: [              ← GLOBAL, grows as player meets NPCs across all clients
     {
-      npcId:   string
-      value:   number           (-100 to +100)
-      status:  'Romance' | 'Friend' | 'Enemy' | 'Neutral'
+      npcId:         string
+      value:         number     (-100 to +100)
+      status:        'Romance' | 'Friend' | 'Enemy' | 'Neutral'
+      romanceStatus: 'none' | 'flirting' | 'dating'
+                    ← player can have MULTIPLE active romances simultaneously
+                    ← 'dating' is max — no 'committed' status exists
+                    ← a choice can END a romance (e.g. NPC discovers another romance)
     }
   ]
 
 users/{uid}/progress/{clientId}
   currentSeasonId:      string
   currentEpisodeId:     string
-  completedEpisodes:    string[]   ← episode IDs completed
-  episodesPlayedCount:  number     ← compared to client.freeEpisodeCount for free tier
+  currentSceneId:       string     ← resume from exact scene if app closes
+  completedEpisodes:    string[]
+  episodesPlayedCount:  number     ← total played, compared to client.freeEpisodeCount
   lastPlayedAt:         Timestamp
+
+  choices: [                       ← PERMANENT record of every choice ever made
+    {
+      episodeId:   string
+      sceneId:     string
+      choiceIndex: number
+      choiceText:  string
+      madeAt:      Timestamp
+    }
+  ]
+
+  cluesFound:  string[]            ← clue IDs discovered through correct choices / mini-game wins
+  clueMissed:  string[]            ← clue IDs lost through wrong choices / mini-game losses
+                                      (surfaces as consequences in future scenes/episodes)
 
 users/{uid}/entitlements/season_{clientId}_{seasonId}
   type:           'season_purchased'
-  productId:      string           ← IAP product ID
+  productId:      string
   purchasedAt:    Timestamp
   purchaseToken:  string           ← IAP receipt (verified Phase 5)
 
@@ -216,51 +235,121 @@ clients/{clientId}
   tagline:           string
   description:       string
   avatarUrl:         string        ← S3 URL
-  voiceId:           string        ← ElevenLabs voice ID for this client's narration
+  voiceId:           string        ← ElevenLabs voice ID
   order:             number        ← display order in Clients tab
   releaseStatus:     'available' | 'coming_soon'
-  freeEpisodeCount:  number        ← e.g. 3 (total free across all seasons)
+  freeEpisodeCount:  number        ← e.g. 3 (total free across all seasons of this client)
+  npcId:             string        ← points to npcs/{npcId} — client IS also an NPC
+                                      so detective–client relationship is tracked like any NPC
 
 clients/{clientId}/seasons/{seasonId}
   title:             string
   order:             number
   unlockCondition:   string        ← story prerequisite e.g. 'Complete Season 1'
-  adsPerEpisode:     number        ← e.g. 5 ads to unlock one episode
+  adsPerEpisode:     number        ← e.g. 5
   productId:         string        ← IAP product ID e.g. 'com.detectivesdilemma.ashworth.s1'
   price:             number        ← display price e.g. 1.99
 
 clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}
   title:             string
-  order:             number        ← global seq across all seasons (1,2,3…) for free count
+  order:             number        ← global seq across all seasons (1,2,3…) for free tier count
   unlockCondition:   string        ← e.g. 'Complete Episode 2'
-  mediaBaseUrl:      string        ← S3 base URL for this episode's assets
-  scenes: [
+  mediaBaseUrl:      string        ← S3 base URL for all assets in this episode
+  scenes: [          ← SCENE GRAPH: each scene is a node, connected by nextSceneId / choices
     {
-      sceneId:      string
-      type:         'image' | 'video' | 'dialogue' | 'choice' | 'minigame'
-      imageUrl:     string          ← S3 path relative to mediaBaseUrl
-      videoUrl:     string          ← S3 path relative to mediaBaseUrl
-      dialogueText: string
-      audioUrl:     string          ← pre-generated ElevenLabs MP3 on S3
-      speakerNpcId: string
-      choices: [
+      sceneId:       string
+      type:          'video' | 'image' | 'dialogue' | 'choice' | 'minigame' | 'episode_end'
+
+      ── video ──────────────────────────────────────────────────────────────
+      videoUrl?:     string        ← S3 MP4; can appear anywhere, multiple times per episode
+      nextSceneId?:  string        ← auto-advance when video ends
+
+      ── image + dialogue (can be combined) ─────────────────────────────────
+      imageUrl?:     string        ← S3 JPG background
+      dialogueText?: string
+      audioUrl?:     string        ← pre-generated ElevenLabs MP3 (S3)
+      speakerNpcId?: string
+      nextSceneId?:  string        ← advance on player tap
+
+      ── choice (branches always converge back to a common scene) ───────────
+      choices?: [
         {
-          text:               string
-          nextSceneId:        string
-          relationshipEffect: { npcId: string; delta: number }
+          text:        string
+          nextSceneId: string      ← all branches lead back to a common scene
+
+          immediate?: {
+            relationshipEffects?: [{ npcId: string; delta: number }]
+            clueGrant?:           string[]   ← clue IDs revealed now
+          }
+          deferred?: {
+            clueMissed?:          string[]   ← stored in progress.clueMissed, surfaces later
+            relationshipEffects?: [{ npcId: string; delta: number; triggerAtScene: string }]
+          }
         }
       ]
+
+      ── minigame ───────────────────────────────────────────────────────────
+      minigameType?:   'hidden_objects' | 'rps_combat' | 'interrogation'
+      minigameConfig?: object      ← difficulty, items to find, suspect data etc.
+      nextSceneId?:    string      ← SAME path regardless of win or lose
+
+      onWin?: {
+        relationshipEffects?: [{ npcId: string; delta: number }]
+        clueGrant?:           string[]
+      }
+      onLose?: {
+        relationshipEffects?: [{ npcId: string; delta: number }]   ← negative deltas
+        clueMissed?:          string[]   ← stored in progress.clueMissed
+      }
+
+      ── episode_end ────────────────────────────────────────────────────────
+      ← triggers: save progress, increment episodesPlayedCount,
+                  check entitlement for next episode, apply any pending deferred effects
     }
   ]
 
-npcs/{npcId}                       ← TOP-LEVEL GLOBAL (not per-client)
+npcs/{npcId}                       ← TOP-LEVEL GLOBAL (clients, suspects, witnesses, etc.)
   name:              string
   role:              string
   description:       string
   avatarUrl:         string        ← S3 URL
   voiceId:           string        ← ElevenLabs voice ID
-  appearsInClients:  string[]      ← which clientIds this NPC appears in
+  appearsInClients:  string[]      ← clientIds where this NPC appears
+  isClient:          boolean       ← true if this NPC is also a client
+  romanceEligible:   boolean       ← can player romance this NPC?
+  initialValue:      number        ← starting relationship value
+  initialStatus:     'Friend' | 'Enemy' | 'Neutral'
 ```
+
+---
+
+## 💘 Romance System
+
+- Player can be in **multiple simultaneous romances** — no exclusivity by default
+- Max romance status is **`'dating'`** — there is no `'committed'` state
+- Progression: `none → flirting → dating` (driven by relationship value thresholds or specific choice scenes)
+- A choice can **end a romance** (e.g. an NPC discovers you're seeing someone else → status drops back to `'none'` or `'enemy'`)
+- Romance eligibility is per-NPC: `romanceEligible: true/false` in the NPC document
+- Player's `sexualPreference` (Men / Women / Both / None) does not block romances — it is a story flavour field
+
+| romanceStatus | Typical value threshold | How reached |
+|---|---|---|
+| `none` | any | default, or after romance ends |
+| `flirting` | +40 | triggered by specific choice or scene |
+| `dating` | +70 | triggered by specific choice or scene |
+
+---
+
+### Scene Save Strategy
+
+Save to `users/{uid}/progress/{clientId}` is triggered **after every scene node completes**:
+- ✅ Video ends (playback complete)
+- ✅ Dialogue ends (player taps to advance)
+- ✅ Choice made (choice recorded, relationship effects applied)
+- ✅ Mini-game ends (win or lose result recorded)
+- ✅ episode_end reached
+
+This ensures the player can close the app at any point and resume from the exact scene.
 
 ---
 
@@ -303,16 +392,19 @@ async function canPlayEpisode(
 
 ## 🤝 Global NPCs (top-level `npcs/` collection)
 
-NPCs are global — relationships carry over across all clients.
+All NPCs — including clients themselves — live here. Relationships are global and carry over across all clients.
 
-| NPC ID | Name | Role | Initial Value | Initial Status |
-|---|---|---|---|---|
-| `marcus-webb` | Marcus Webb | Rival Detective | 0 | Neutral |
-| `luna` | Luna | Informant Cat | +30 | Friend |
-| `commissioner-hayes` | Commissioner Hayes | Superior | 0 | Neutral |
-| `victoria-cross` | Victoria Cross | Suspect | -40 | Enemy |
+| NPC ID | Name | Role | Initial Value | Romance Eligible | Is Client |
+|---|---|---|---|---|---|
+| `marcus-webb` | Marcus Webb | Rival Detective | 0 | Yes | No |
+| `luna` | Luna | Informant Cat | +30 | No | No |
+| `commissioner-hayes` | Commissioner Hayes | Superior | 0 | No | No |
+| `victoria-cross` | Victoria Cross | Suspect | -40 | Yes | No |
+| `lady-ashworth` | Lady Eleanor Ashworth | Client | +10 | Yes | Yes |
+| `prof-morley` | Professor Henry Morley | Client | +10 | Yes | Yes |
 
-Relationship values update through episode choices. Stored in `users/{uid}.relationships[]`.
+> Client NPCs (`isClient: true`) are also listed in `clients/{clientId}` with `npcId` linking back here.
+> Relationship values update through episode choices/minigames. Stored in `users/{uid}.relationships[]`.
 
 ---
 
