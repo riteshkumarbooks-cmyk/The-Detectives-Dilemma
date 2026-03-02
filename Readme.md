@@ -143,12 +143,28 @@ Player Detective (auto-assigned from age + gender)
 ## 🗂️ Firestore Schema
 
 ### ⚠️ Data ownership rules
-- `users/{uid}/*` — player-owned data (profile, progress, relationships)
-- `clients/*` — game content owned by us (not editable by players)
-- `episodes/*` — game content owned by us
+- `users/{uid}/*` — player-owned data. Writable only by the owning user.
+- `clients/*`, `npcs/*` — game content. Written by us (admin/script), read-only for players.
+
+---
+
+### 💰 Monetization Model
+
+Each episode falls into exactly one access tier, checked in order:
+
+| Priority | Tier | Condition | How unlocked |
+|---|---|---|---|
+| 1 | **Free** | `episode.order ≤ client.freeEpisodeCount` (3) | Automatic — first 3 episodes per client |
+| 2 | **Season owned** | Season purchase entitlement exists | One-time IAP — unlocks full season, no ads |
+| 3 | **Ad-unlocked** | Episode ad entitlement exists | Watch 5 ads → permanently unlocks that episode |
+| 4 | **Locked** | None of the above | Show paywall: Buy Season OR Watch Ads |
+
+> `freeEpisodeCount` counts total episodes played **across all seasons of that client**, not per season.
+
+---
 
 ```
-── Player data ──────────────────────────────────────────────────────────────
+── Player data (per-user, writable only by owner) ───────────────────────────
 
 users/{uid}
   uid:           string
@@ -167,59 +183,110 @@ users/{uid}
     wrongGuesses:     number
     updatedAt:        Timestamp
   }
-  relationships: [
+  relationships: [              ← GLOBAL across all clients, grows with gameplay
     {
       npcId:   string
-      name:    string
-      role:    string
-      value:   number   (-100 to +100)
+      value:   number           (-100 to +100)
       status:  'Romance' | 'Friend' | 'Enemy' | 'Neutral'
     }
   ]
 
-users/{uid}/progress/{clientId}      ← per-user progress per client
-  currentSeasonId:    string
-  currentEpisodeId:   string
-  completedEpisodes:  string[]
-  unlockedSeasons:    string[]
-  lastPlayedAt:       Timestamp
+users/{uid}/progress/{clientId}
+  currentSeasonId:      string
+  currentEpisodeId:     string
+  completedEpisodes:    string[]   ← episode IDs completed
+  episodesPlayedCount:  number     ← compared to client.freeEpisodeCount for free tier
+  lastPlayedAt:         Timestamp
 
-── Game content (written by us, read by app) ────────────────────────────────
+users/{uid}/entitlements/season_{clientId}_{seasonId}
+  type:           'season_purchased'
+  productId:      string           ← IAP product ID
+  purchasedAt:    Timestamp
+  purchaseToken:  string           ← IAP receipt (verified Phase 5)
+
+users/{uid}/entitlements/episode_{clientId}_{seasonId}_{episodeId}
+  type:           'ads_completed'
+  adsWatched:     number
+  completedAt:    Timestamp
+
+── Game content (written by us, read-only for players) ──────────────────────
 
 clients/{clientId}
-  name:            string
-  tagline:         string
-  description:     string
-  avatarUrl:       string          ← S3 URL
-  isLocked:        boolean
-  unlockCondition: string
-  voiceId:         string          ← ElevenLabs voice ID for this client
-  order:           number          ← display order in clients tab
+  name:              string
+  tagline:           string
+  description:       string
+  avatarUrl:         string        ← S3 URL
+  voiceId:           string        ← ElevenLabs voice ID for this client's narration
+  order:             number        ← display order in Clients tab
+  releaseStatus:     'available' | 'coming_soon'
+  freeEpisodeCount:  number        ← e.g. 3 (total free across all seasons)
 
 clients/{clientId}/seasons/{seasonId}
-  title:           string
-  order:           number
+  title:             string
+  order:             number
+  unlockCondition:   string        ← story prerequisite e.g. 'Complete Season 1'
+  adsPerEpisode:     number        ← e.g. 5 ads to unlock one episode
+  productId:         string        ← IAP product ID e.g. 'com.detectivesdilemma.ashworth.s1'
+  price:             number        ← display price e.g. 1.99
 
 clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}
-  title:           string
-  order:           number
-  isLocked:        boolean
-  unlockCondition: string
-  mediaBaseUrl:    string          ← S3 base URL for this episode's assets
+  title:             string
+  order:             number        ← global seq across all seasons (1,2,3…) for free count
+  unlockCondition:   string        ← e.g. 'Complete Episode 2'
+  mediaBaseUrl:      string        ← S3 base URL for this episode's assets
   scenes: [
     {
       sceneId:      string
       type:         'image' | 'video' | 'dialogue' | 'choice' | 'minigame'
-      imageUrl:     string          ← relative to mediaBaseUrl
-      videoUrl:     string          ← relative to mediaBaseUrl
+      imageUrl:     string          ← S3 path relative to mediaBaseUrl
+      videoUrl:     string          ← S3 path relative to mediaBaseUrl
       dialogueText: string
-      audioUrl:     string          ← pre-generated ElevenLabs MP3 (S3)
+      audioUrl:     string          ← pre-generated ElevenLabs MP3 on S3
       speakerNpcId: string
       choices: [
-        { text: string; nextSceneId: string; relationshipEffect: { npcId: string; delta: number } }
+        {
+          text:               string
+          nextSceneId:        string
+          relationshipEffect: { npcId: string; delta: number }
+        }
       ]
     }
   ]
+
+npcs/{npcId}                       ← TOP-LEVEL GLOBAL (not per-client)
+  name:              string
+  role:              string
+  description:       string
+  avatarUrl:         string        ← S3 URL
+  voiceId:           string        ← ElevenLabs voice ID
+  appearsInClients:  string[]      ← which clientIds this NPC appears in
+```
+
+---
+
+### Access Logic (implemented in `src/services/entitlements.ts`)
+
+```typescript
+async function canPlayEpisode(
+  uid, clientId, seasonId, episodeId, episodeOrder
+): Promise<'free' | 'owned' | 'ads' | 'locked'> {
+
+  const client   = await getClient(clientId);
+  const progress = await getProgress(uid, clientId);
+
+  // Tier 1 — Free
+  if (progress.episodesPlayedCount < client.freeEpisodeCount) return 'free';
+
+  // Tier 2 — Season purchased
+  const seasonKey = `season_${clientId}_${seasonId}`;
+  if (await getEntitlement(uid, seasonKey)) return 'owned';
+
+  // Tier 3 — Ad-unlocked
+  const episodeKey = `episode_${clientId}_${seasonId}_${episodeId}`;
+  if (await getEntitlement(uid, episodeKey)) return 'ads';
+
+  return 'locked'; // Show paywall: Buy Season OR Watch Ads
+}
 ```
 
 ---
@@ -234,16 +301,18 @@ clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}
 
 ---
 
-## 🤝 Relationship Matrix NPCs (Seeded in Phase 2)
+## 🤝 Global NPCs (top-level `npcs/` collection)
 
-| NPC | Role | Initial Status |
-|---|---|---|
-| Marcus Webb | Rival Detective | Neutral (0) |
-| Luna | Informant Cat | Friend (+30) |
-| Commissioner Hayes | Superior | Neutral (0) |
-| Victoria Cross | Suspect | Enemy (-40) |
+NPCs are global — relationships carry over across all clients.
 
-Values update through gameplay choices in episodes.
+| NPC ID | Name | Role | Initial Value | Initial Status |
+|---|---|---|---|---|
+| `marcus-webb` | Marcus Webb | Rival Detective | 0 | Neutral |
+| `luna` | Luna | Informant Cat | +30 | Friend |
+| `commissioner-hayes` | Commissioner Hayes | Superior | 0 | Neutral |
+| `victoria-cross` | Victoria Cross | Suspect | -40 | Enemy |
+
+Relationship values update through episode choices. Stored in `users/{uid}.relationships[]`.
 
 ---
 
@@ -283,20 +352,21 @@ Player's own name always displayed — detective template only affects appearanc
 - Home screen: detective standing in office with parallax depth effect
 
 ### Phase 2: Character System & Navigation — IN PROGRESS 🔄
-- [x] Bottom tab bar (Home | Clients | Profile | Gallery) — built
-- [x] Clients tab with client card grid — built (hardcoded, needs Firestore)
-- [x] Client detail screen (Episodes + Gallery inner tabs) — built (hardcoded, needs Firestore)
-- [x] Profile tab (stats + relationship matrix) — built
-- [ ] **NEXT: Move client data from local constants → Firestore `clients/` collection**
-- [ ] Verify Firebase read/write connectivity for clients
-- [ ] S3 bucket setup + env variables
-- [ ] ElevenLabs voice IDs assigned to NPCs
+- [x] Bottom tab bar (Home | Clients | Profile | Gallery)
+- [x] Clients tab — client card grid (hardcoded, needs Firestore)
+- [x] Client detail screen — Episodes + Gallery inner tabs (hardcoded, needs Firestore)
+- [x] Profile tab — stats + relationship matrix (seeded to Firestore)
+- [x] Data model finalised — clients, seasons, episodes, npcs, entitlements
+- [ ] **NEXT:** Seed `clients/` + `npcs/` collections into Firestore
+- [ ] Wire `clients.tsx` and `client/[id].tsx` to read from Firestore
+- [ ] Firestore Security Rules updated for `clients/` and `npcs/`
 
 ### Phase 3: Episode Framework & Save System — PENDING ⏳
-- Episode data model + save state
-- Choice-based narrative engine
-- Save/load with progress tracking
-- Tab 2 (Clients → Episodes) fully playable
+- Episode playback engine (scenes: image → dialogue → choice → next)
+- Save progress to `users/{uid}/progress/{clientId}` after each episode
+- Entitlements service (`src/services/entitlements.ts`) — free/owned/ads/locked
+- Paywall UI: "Buy Season" (IAP) + "Watch 5 Ads" options
+- Wire episode order → ad/purchase gate enforcement
 
 ### Phase 4: Mini-Games & Interactive Systems — PENDING ⏳
 - Hidden Objects, Rock-Paper-Scissors Combat, Interrogation mini-games
@@ -336,7 +406,12 @@ EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
 | `app/(auth)/login.tsx` | Login screen |
 | `app/(auth)/register.tsx` | Registration + Firestore profile creation |
 | `app/(main)/index.tsx` | Character creation form (redirects to tabs if profile exists) |
-| `app/(main)/home.tsx` | Home tab — office scene + parallax detective |
+| `app/(main)/(tabs)/home.tsx` | Home tab — office scene + parallax detective |
+| `app/(main)/(tabs)/clients.tsx` | Clients tab — client card grid |
+| `app/(main)/(tabs)/profile.tsx` | Profile tab — stats + relationship matrix |
+| `app/(main)/(tabs)/gallery.tsx` | Gallery tab — placeholder (Phase 5) |
+| `app/(main)/client/[id].tsx` | Client detail — Episodes + Gallery inner tabs |
+| `src/services/entitlements.ts` | Access tier logic (free/owned/ads/locked) |
 | `app/(main)/(tabs)/_layout.tsx` | Tab bar layout (Phase 2+) |
 | `src/config/firebase.ts` | Firebase init (AsyncStorage persistence) |
 | `src/services/auth.ts` | Auth functions |
