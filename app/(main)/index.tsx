@@ -45,7 +45,7 @@ export default function CharacterCreationScreen() {
   useEffect(() => {
     AsyncStorage.getItem(profileKey).then(data => {
       if (data) {
-        router.replace('/(main)/home');
+        router.replace('/(main)/(tabs)/home');
       } else {
         setLoaded(true);
       }
@@ -100,7 +100,7 @@ export default function CharacterCreationScreen() {
       );
     }
 
-    router.replace('/(main)/home');
+    router.replace('/(main)/(tabs)/home');
   }
 
   // Show blank while checking AsyncStorage

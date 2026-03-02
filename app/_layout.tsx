@@ -20,7 +20,7 @@ export default function RootLayout() {
         router.replace('/(auth)/login');
       } else if (user && !inMainGroup) {
         // Logged in but not yet on main (covers splash + auth screens) → go to main
-        router.replace('/(main)');
+        router.replace('/(main)/(tabs)/home');
       }
     };
 

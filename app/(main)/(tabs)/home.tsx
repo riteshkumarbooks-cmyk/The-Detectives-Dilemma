@@ -52,37 +52,37 @@ const CHARACTERS = [
     id:       'man-young',
     name:     'Jake Carter',
     subtitle: 'Male · 20–30',
-    image:    require('../../assets/characters/man-young.png') as number,
+    image:    require('../../../assets/characters/man-young.png') as number,
   },
   {
     id:       'man-mid',
     name:     'Marcus Reid',
     subtitle: 'Male · 30–45',
-    image:    require('../../assets/characters/man-mid.png') as number,
+    image:    require('../../../assets/characters/man-mid.png') as number,
   },
   {
     id:       'man-senior',
     name:     'Victor Kane',
     subtitle: 'Male · 45–70',
-    image:    require('../../assets/characters/man-senior.png') as number,
+    image:    require('../../../assets/characters/man-senior.png') as number,
   },
   {
     id:       'woman-young',
     name:     'Zoe Hart',
     subtitle: 'Female · 20–30',
-    image:    require('../../assets/characters/woman-young.png') as number,
+    image:    require('../../../assets/characters/woman-young.png') as number,
   },
   {
     id:       'woman-mid',
     name:     'Diana Cross',
     subtitle: 'Female · 30–45',
-    image:    require('../../assets/characters/woman-mid.png') as number,
+    image:    require('../../../assets/characters/woman-mid.png') as number,
   },
   {
     id:       'woman-senior',
     name:     'Eleanor Voss',
     subtitle: 'Female · 45–70',
-    image:    require('../../assets/characters/woman-senior.png') as number,
+    image:    require('../../../assets/characters/woman-senior.png') as number,
   },
 ] as const;
 
@@ -185,7 +185,7 @@ export default function HomeScreen() {
     <View style={styles.bg}>
       {/* Background — moves subtly on tilt (far layer) */}
       <Animated.Image
-        source={require('../../assets/office-bg.png')}
+        source={require('../../../assets/office-bg.png')}
         style={[styles.bgImage, { transform: bgShift.getTranslateTransform() }]}
         resizeMode="cover"
       />
