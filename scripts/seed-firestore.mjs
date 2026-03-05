@@ -66,6 +66,7 @@ async function main() {
       order: 1,
       unlockCondition: null,
       mediaBaseUrl: null,   // S3 TODO: 'https://cdn.example.com/clients/duchess-margaux/seasons/season-1/episodes/ep-1/'
+      graphUrl: null,       // Firebase Storage TODO: set to uploaded graph JSON URL when ready
     },
     {
       id: 'ep-2',
@@ -73,6 +74,7 @@ async function main() {
       order: 2,
       unlockCondition: 'Complete Episode 1',
       mediaBaseUrl: null,
+      graphUrl: null,
     },
     {
       id: 'ep-3',
@@ -80,6 +82,7 @@ async function main() {
       order: 3,
       unlockCondition: 'Complete Episode 2',
       mediaBaseUrl: null,
+      graphUrl: null,
     },
   ];
 

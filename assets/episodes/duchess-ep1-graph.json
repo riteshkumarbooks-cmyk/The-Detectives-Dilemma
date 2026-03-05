@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "startScene": "ep1_intro",
+  "scenes": {
+    "ep1_intro": {
+      "videoUrl": null,
+      "next": "ep1_duchess_speaks"
+    },
+    "ep1_duchess_speaks": {
+      "videoUrl": null,
+      "choices": [
+        {
+          "text": "Bow formally. \"You have my complete discretion, Your Grace.\"",
+          "next": "ep1_after_choice",
+          "effects": { "duchess_trust": 5 }
+        },
+        {
+          "text": "Smile warmly. \"You can trust me. Tell me everything.\"",
+          "next": "ep1_after_choice",
+          "effects": { "duchess_trust": 10 }
+        },
+        {
+          "text": "Stay silent. Let her continue.",
+          "next": "ep1_after_choice"
+        }
+      ]
+    },
+    "ep1_after_choice": {
+      "videoUrl": null,
+      "next": "ep1_clue_reveal"
+    },
+    "ep1_clue_reveal": {
+      "videoUrl": null,
+      "clues": ["clue_victoria_cross_connection"],
+      "effects": { "victoria_suspicion": -10 },
+      "next": "ep1_search_desk"
+    },
+    "ep1_search_desk": {
+      "type": "minigame",
+      "minigameType": "hidden_objects",
+      "minigameConfig": {
+        "items": ["sealed_letter", "crest_sketch", "torn_envelope"],
+        "timeLimit": 60
+      },
+      "clueOnWin": "clue_letter_handwriting",
+      "effectOnWin":  { "duchess_trust":  5 },
+      "effectOnLose": { "duchess_trust": -5 },
+      "onWin":  "ep1_search_success",
+      "onLose": "ep1_search_fail"
+    },
+    "ep1_search_success": {
+      "videoUrl": null,
+      "clues": ["clue_letter_handwriting"],
+      "next": "ep1_end"
+    },
+    "ep1_search_fail": {
+      "videoUrl": null,
+      "next": "ep1_end"
+    },
+    "ep1_end": {
+      "type": "episode_end"
+    }
+  }
+}
