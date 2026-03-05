@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Game content (written by admin scripts, read-only for players) ────────
+    match /clients/{clientId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      match /seasons/{seasonId} {
+        allow read: if request.auth != null;
+        allow write: if false;
+
+        match /episodes/{episodeId} {
+          allow read: if request.auth != null;
+          allow write: if false;
+
+          match /scenes/{sceneId} {
+            allow read: if request.auth != null;
+            allow write: if false;
+          }
+        }
+      }
+    }
+
+    match /npcs/{npcId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── Player data (owner read/write only) ───────────────────────────────────
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /progress/{clientId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      match /entitlements/{entitlementId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+  }
+}
