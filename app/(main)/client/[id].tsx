@@ -184,6 +184,13 @@ export default function ClientDetailScreen() {
                       key={ep.id}
                       style={[styles.episodeCard, ep.isLocked && styles.episodeLocked]}
                       activeOpacity={ep.isLocked ? 1 : 0.7}
+                      onPress={() => {
+                        if (ep.isLocked) return;
+                        router.push({
+                          pathname: '/(main)/episode',
+                          params: { clientId: id, seasonId: season.id, episodeId: ep.id },
+                        });
+                      }}
                     >
                       <Text style={styles.episodeLockIcon}>{ep.isLocked ? '🔒' : '▶️'}</Text>
                       <Text style={[styles.episodeTitle, ep.isLocked && styles.lockedText]}>
