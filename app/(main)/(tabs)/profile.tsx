@@ -33,10 +33,11 @@ interface Relationship {
 
 // ── Default NPCs seeded on first load ─────────────────────────────────────────
 const DEFAULT_RELATIONSHIPS: Relationship[] = [
-  { npcId: 'marcus-webb',       name: 'Marcus Webb',       role: 'Rival Detective', value:   0, status: 'Neutral' },
-  { npcId: 'luna',              name: 'Luna',              role: 'Informant Cat',   value:  30, status: 'Friend'  },
-  { npcId: 'commissioner-hayes',name: 'Commissioner Hayes',role: 'Superior',        value:   0, status: 'Neutral' },
-  { npcId: 'victoria-cross',    name: 'Victoria Cross',    role: 'Suspect',         value: -40, status: 'Enemy'   },
+  { npcId: 'duchess-margaux',   name: 'Duchess Margaux de Valois', role: 'Client',          value:  10, status: 'Neutral' },
+  { npcId: 'marcus-webb',       name: 'Marcus Webb',               role: 'Rival Detective', value:   0, status: 'Neutral' },
+  { npcId: 'luna',              name: 'Luna',                      role: 'Informant Cat',   value:  30, status: 'Friend'  },
+  { npcId: 'commissioner-hayes',name: 'Commissioner Hayes',        role: 'Superior',        value:   0, status: 'Neutral' },
+  { npcId: 'victoria-cross',    name: 'Victoria Cross',            role: 'Suspect',         value: -40, status: 'Enemy'   },
 ];
 
 // ── Rank helper ───────────────────────────────────────────────────────────────
