@@ -2,11 +2,13 @@
 // Episode 1: The First Audience
 //
 // TAG PROTOCOL (read by the React Native engine):
-//   # scene: <sceneId>         → S3 asset prefix for bg/video/audio
-//   # type: <image|dialogue|choice|episode_end>
-//   # speaker: <npcId>         → NPC whose lip-sync video plays
+//   # scene: <sceneId>             → S3 asset prefix: mediaBaseUrl + sceneId + '_lipsync.mp4' etc.
+//   # type: <image|dialogue|video|choice|minigame|episode_end>
+//   # speaker: <npcId>             → NPC whose lip-sync video plays (type: dialogue)
 //   # emotion: <neutral|happy|stressed|fearful|angry|suspicious>
-//   # clue: <clueId>           → granted when player reaches this line
+//   # clue: <clueId>               → clue granted when player reaches this line
+//   # minigame: <type>             → minigame type (type: minigame scenes only)
+//   # minigame_config: <json>      → config passed to the mini-game screen
 //
 // VARIABLES map directly to Firestore:
 //   duchess_trust            → relationships[duchess-margaux].value
@@ -78,6 +80,40 @@ What do you do?
 "The letter mentioned a name — Victoria Cross. Find out what she knows."
 ~ clue_victoria_found = true
 ~ victoria_suspicion -= 10
+-> ep1_search_desk
+
+// ─────────────────────────────────────────────────────────────
+// Mini-game demo: search the desk for the letter (hidden objects)
+// WIN  → finds the letter → bonus clue
+// LOSE → can't find it  → duchess grows frustrated
+=== ep1_search_desk ===
+# scene: ep1_search_desk
+# type: minigame
+# minigame: hidden_objects
+# minigame_config: {"items":["sealed_letter","crest_sketch","torn_envelope"],"timeLimit":60}
++ [WIN]
+    # clue: clue_letter_handwriting
+    ~ duchess_trust += 5
+    -> ep1_search_success
++ [LOSE]
+    ~ duchess_trust -= 5
+    -> ep1_search_fail
+
+=== ep1_search_success ===
+# scene: ep1_search_success
+# type: dialogue
+# speaker: duchess-margaux
+# emotion: happy
+# clue: clue_letter_handwriting
+"You found it. The handwriting — do you see the flourish on the V? I know that hand."
+-> ep1_end
+
+=== ep1_search_fail ===
+# scene: ep1_search_fail
+# type: dialogue
+# speaker: duchess-margaux
+# emotion: stressed
+"It doesn't matter. Just find Victoria Cross. The letter is the least of my worries."
 -> ep1_end
 
 // ─────────────────────────────────────────────────────────────

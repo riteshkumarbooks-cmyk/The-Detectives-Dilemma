@@ -41,3 +41,4 @@ Pods/
 # Misc
 .idea/
 .vscode/
+scripts/service-account.json

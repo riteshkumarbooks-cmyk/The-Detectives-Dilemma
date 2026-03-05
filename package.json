@@ -21,6 +21,7 @@
     "expo-sensors": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
+    "expo-video": "~3.0.16",
     "expo-web-browser": "~15.0.10",
     "firebase": "^11.10.0",
     "inkjs": "^2.4.0",

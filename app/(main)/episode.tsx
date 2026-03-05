@@ -1,23 +1,35 @@
 // episode.tsx — inkjs-powered Episode Player
 //
-// Narrative engine: Ink (inkjs)
-//   • .ink scripts authored in Inky editor → compiled via: node scripts/compile-ink.mjs
-//   • Tags drive scene type, speaker, emotion, video cue, clue grants
-//   • Variables drive relationship scores (synced to Firestore after each scene)
-//   • story.state.ToJson() → saved to Firestore for exact-position resume
+// Scene rendering pipeline (driven by Ink tags):
+//   # type: image      → static bg, tap to advance
+//   # type: dialogue   → NPC lip-sync video (S3) + text overlay, tap to advance
+//   # type: video      → cinematic video (S3), auto-advances on completion
+//   # type: minigame   → navigates to /(main)/minigame, returns via minigameResult service
+//   # type: episode_end → marks episode complete
 //
-// Firestore writes (users/{uid}/progress/{clientId}):
-//   inkStateJson   — full ink state blob (resume from exact scene)
-//   choicesMade    — named map { [sceneKnotId]: { index, text, madeAt } }
-//   cluesFound     — string[] of discovered clue IDs
-//   completedEpisodes, episodesPlayedCount, lastPlayedAt
+// Ink advance model (ONE Continue() per tap):
+//   • story.Continue() returns ONE paragraph + its tags
+//   • Tags carry forward when a line has no type tag (continuation of same scene)
+//   • Empty lines auto-advance internally
+//   • Choices appear via story.currentChoices after a Continue()
+//
+// Video URL pattern (requires mediaBaseUrl on Firestore episode doc):
+//   dialogue  → mediaBaseUrl + sceneId + '_lipsync.mp4'
+//   video     → mediaBaseUrl + sceneId + '_video.mp4'
+//
+// Mini-game round-trip:
+//   episode detects minigame scene + currentChoices [WIN, LOSE]
+//   → router.push(/(main)/minigame)
+//   → minigame calls setMinigameResult('win'|'lose') → router.back()
+//   → useFocusEffect → story.ChooseChoiceIndex(0=win, 1=lose)
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   SafeAreaView, ActivityIndicator, Modal, ScrollView,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { Story } from 'inkjs';
 import {
   doc, getDoc, setDoc, serverTimestamp, arrayUnion, Timestamp,
@@ -26,6 +38,7 @@ import { db } from '@/config/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { Colors } from '@/constants/colors';
 import { getStoryJson, INK_VAR_TO_NPC } from '@/config/storyMap';
+import { consumeMinigameResult } from '@/services/minigameResult';
 
 // ── NPC display names ──────────────────────────────────────────────────────
 const NPC_NAMES: Record<string, string> = {
@@ -40,27 +53,65 @@ const NPC_NAMES: Record<string, string> = {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface ParsedTags {
-  scene?:   string;
-  type?:    string;   // image | dialogue | choice | video | minigame | episode_end
-  speaker?: string;
-  emotion?: string;
-  clues:    string[];
+  scene?:         string;
+  type?:          string;
+  speaker?:       string;
+  emotion?:       string;
+  minigame?:      string;
+  minigameConfig?: string;
+  clues:          string[];
 }
 
 function parseTags(tags: string[]): ParsedTags {
-  const result: ParsedTags = { clues: [] };
+  const r: ParsedTags = { clues: [] };
   for (const t of tags) {
-    const colonIdx = t.indexOf(':');
-    if (colonIdx === -1) continue;
-    const key = t.slice(0, colonIdx).trim();
-    const val = t.slice(colonIdx + 1).trim();
-    if (key === 'scene')   result.scene   = val;
-    if (key === 'type')    result.type    = val;
-    if (key === 'speaker') result.speaker = val;
-    if (key === 'emotion') result.emotion = val;
-    if (key === 'clue')    result.clues.push(val);
+    const i = t.indexOf(':');
+    if (i === -1) continue;
+    const key = t.slice(0, i).trim();
+    const val = t.slice(i + 1).trim();
+    if (key === 'scene')           r.scene         = val;
+    if (key === 'type')            r.type          = val;
+    if (key === 'speaker')         r.speaker       = val;
+    if (key === 'emotion')         r.emotion       = val;
+    if (key === 'minigame')        r.minigame      = val;
+    if (key === 'minigame_config') r.minigameConfig = val;
+    if (key === 'clue')            r.clues.push(val);
   }
-  return result;
+  return r;
+}
+
+// Tags carry forward within a scene — merge new tags onto previous
+function mergeTags(prev: ParsedTags, next: ParsedTags): ParsedTags {
+  return {
+    scene:         next.scene         ?? prev.scene,
+    type:          next.type          ?? prev.type,
+    speaker:       next.speaker       ?? prev.speaker,
+    emotion:       next.emotion       ?? prev.emotion,
+    minigame:      next.minigame      ?? prev.minigame,
+    minigameConfig: next.minigameConfig ?? prev.minigameConfig,
+    clues:         next.clues,   // always fresh — don't accumulate across lines
+  };
+}
+
+// ── Scene video component ──────────────────────────────────────────────────
+function SceneVideo({ uri, onEnd }: { uri: string; onEnd: () => void }) {
+  const player = useVideoPlayer(uri, p => { p.loop = false; p.play(); });
+
+  useEffect(() => {
+    const sub = player.addListener('playingChange', ({ isPlaying }) => {
+      if (!isPlaying && player.currentTime > 0) onEnd();
+    });
+    return () => sub.remove();
+  }, [player]);
+
+  return (
+    <VideoView
+      player={player}
+      style={StyleSheet.absoluteFillObject}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
 }
 
 // ── Screen ─────────────────────────────────────────────────────────────────
@@ -71,17 +122,21 @@ export default function EpisodeScreen() {
   const { user } = useAuth();
   const router   = useRouter();
 
-  const storyRef = useRef<Story | null>(null);
+  const storyRef          = useRef<Story | null>(null);
+  const pendingMinigame   = useRef(false);
+  const mediaBaseUrlRef   = useRef<string | null>(null);
 
   const [episodeTitle, setEpisodeTitle] = useState('');
   const [loading,      setLoading]      = useState(true);
   const [complete,     setComplete]     = useState(false);
   const [saving,       setSaving]       = useState(false);
 
-  // Current rendered state
-  const [displayText, setDisplayText] = useState('');
-  const [tags,        setTags]        = useState<ParsedTags>({ clues: [] });
-  const [choices,     setChoices]     = useState<{ text: string; index: number }[]>([]);
+  // Current scene rendering state
+  const [displayText,  setDisplayText]  = useState('');
+  const [tags,         setTags]         = useState<ParsedTags>({ clues: [] });
+  const [choices,      setChoices]      = useState<{ text: string; index: number }[]>([]);
+  const [videoUri,     setVideoUri]     = useState<string | null>(null);
+  const [videoAutoEnd, setVideoAutoEnd] = useState(false);
 
   // Persistent progress
   const [cluesFound, setCluesFound] = useState<string[]>([]);
@@ -95,28 +150,27 @@ export default function EpisodeScreen() {
 
   async function initEpisode() {
     try {
-      // 1. Episode title from Firestore
       const epSnap = await getDoc(
         doc(db, 'clients', clientId, 'seasons', seasonId, 'episodes', episodeId)
       );
-      setEpisodeTitle(epSnap.exists() ? (epSnap.data().title ?? '') : '');
+      if (epSnap.exists()) {
+        const d = epSnap.data();
+        setEpisodeTitle(d.title ?? '');
+        mediaBaseUrlRef.current = d.mediaBaseUrl ?? null;
+      }
 
-      // 2. Load compiled ink story
       const storyJson = getStoryJson(clientId, episodeId);
       if (!storyJson) {
-        console.error(`No story found for ${clientId}/${episodeId}`);
+        console.error(`No story: ${clientId}/${episodeId}`);
         setLoading(false);
         return;
       }
       const story = new Story(JSON.stringify(storyJson));
       storyRef.current = story;
 
-      // 3. Restore saved state if available
       if (user?.uid) {
-        const saveSnap = await getDoc(
-          doc(db, 'users', user.uid, 'progress', clientId)
-        );
-        const saved = saveSnap.data();
+        const snap  = await getDoc(doc(db, 'users', user.uid, 'progress', clientId));
+        const saved = snap.data();
         if (saved?.inkStateJson && saved?.lastEpisodeId === episodeId) {
           try { story.state.LoadJson(saved.inkStateJson); } catch (_) {}
         }
@@ -124,133 +178,167 @@ export default function EpisodeScreen() {
       }
 
       setLoading(false);
-      advance(story);
+      doAdvance(story, { clues: [] });   // seed with empty prev tags
     } catch (e) {
-      console.error('Failed to init episode:', e);
+      console.error('initEpisode failed:', e);
       setLoading(false);
     }
   }
 
-  // ── Advance story ──────────────────────────────────────────────────────────
-  async function advance(
-    story: Story,
-    choiceIndex?: number,
-    choiceText?: string,
-  ) {
-    // Record choice in named map BEFORE advancing (while tags.scene still = current knot)
-    if (choiceIndex !== undefined && tags.scene) {
-      await saveChoice(tags.scene, choiceIndex, choiceText ?? '');
-    }
+  // ── Mini-game return ───────────────────────────────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      if (!pendingMinigame.current || !storyRef.current) return;
+      pendingMinigame.current = false;
+      const result = consumeMinigameResult();
+      doAdvance(storyRef.current, tags, result === 'win' ? 0 : 1, result ?? 'lose');
+    }, [tags])
+  );
 
+  // ── Core advance (ONE Continue() per call) ────────────────────────────────
+  async function doAdvance(
+    story:       Story,
+    prevTags:    ParsedTags,
+    choiceIndex?: number,
+    choiceText?:  string,
+  ) {
+    // Record choice before advancing
+    if (choiceIndex !== undefined && prevTags.scene) {
+      await saveChoice(prevTags.scene, choiceIndex, choiceText ?? '');
+    }
     if (choiceIndex !== undefined) {
       story.ChooseChoiceIndex(choiceIndex);
     }
 
-    // Collect all text until next choice or end
-    let text = '';
-    while (story.canContinue) {
-      text += story.Continue();
+    // Nothing more to do
+    if (!story.canContinue && story.currentChoices.length === 0) {
+      await handleEpisodeEnd();
+      return;
     }
 
-    const nextTags = parseTags(story.currentTags ?? []);
+    // Advance ONE paragraph
+    const text    = story.canContinue ? story.Continue() : '';
+    const newTags = parseTags(story.currentTags ?? []);
+    const active  = mergeTags(prevTags, newTags);
 
-    // Grant clues from tags
-    if (nextTags.clues.length > 0) {
+    // Grant clues
+    if (newTags.clues.length > 0) {
       setCluesFound(prev => {
         const next = [...prev];
-        nextTags.clues.forEach(id => { if (!next.includes(id)) next.push(id); });
+        newTags.clues.forEach(id => { if (!next.includes(id)) next.push(id); });
         return next;
       });
     }
 
-    // Sync relationship variables → Firestore global relationships
     await syncRelationships(story);
+    await persistState(story, newTags.clues);
 
-    // Persist ink state + new clues
-    await persistState(story, nextTags.clues);
-
-    // Check for episode end
-    const isEnd =
-      nextTags.type === 'episode_end' ||
-      (!story.canContinue && story.currentChoices.length === 0);
-
-    if (isEnd) {
+    // Episode end
+    if (active.type === 'episode_end') {
       await handleEpisodeEnd();
-    } else {
-      setDisplayText(text.trim());
-      setTags(nextTags);
-      setChoices(story.currentChoices.map((c, i) => ({ text: c.text, index: i })));
+      return;
     }
+
+    // Mini-game: empty text + minigame type + choices [WIN, LOSE]
+    if (active.type === 'minigame' && story.currentChoices.length > 0) {
+      setTags(active);  // keep for choice recording on return
+      pendingMinigame.current = true;
+      router.push({
+        pathname: '/(main)/minigame',
+        params: {
+          minigameType:   active.minigame   ?? 'hidden_objects',
+          minigameConfig: active.minigameConfig ?? '{}',
+          clientId, seasonId, episodeId,
+        },
+      });
+      return;
+    }
+
+    // Empty line (no text, no choices, still can continue) — skip automatically
+    if (!text.trim() && story.canContinue && story.currentChoices.length === 0) {
+      doAdvance(story, active);
+      return;
+    }
+
+    // Resolve video URI
+    const base = mediaBaseUrlRef.current;
+    let vid: string | null = null;
+    if (base && active.scene) {
+      if      (active.type === 'dialogue') vid = `${base}${active.scene}_lipsync.mp4`;
+      else if (active.type === 'video')    vid = `${base}${active.scene}_video.mp4`;
+    }
+
+    // Update render state
+    setDisplayText(text.trim());
+    setTags(active);
+    setChoices(story.currentChoices.map((c, i) => ({ text: c.text, index: i })));
+    setVideoUri(vid);
+    setVideoAutoEnd(active.type === 'video');
   }
 
-  // ── Save choice to named map ───────────────────────────────────────────────
-  async function saveChoice(sceneKnotId: string, index: number, text: string) {
+  // ── Firestore helpers ─────────────────────────────────────────────────────
+  async function saveChoice(knotId: string, index: number, text: string) {
     if (!user?.uid) return;
-    const progressRef = doc(db, 'users', user.uid, 'progress', clientId);
-    const snap = await getDoc(progressRef);
+    const ref  = doc(db, 'users', user.uid, 'progress', clientId);
+    const snap = await getDoc(ref);
     const existing = snap.data()?.choicesMade ?? {};
     await setDoc(
-      progressRef,
-      { choicesMade: { ...existing, [sceneKnotId]: { index, text, madeAt: Timestamp.now() } } },
+      ref,
+      { choicesMade: { ...existing, [knotId]: { index, text, madeAt: Timestamp.now() } } },
       { merge: true }
     );
   }
 
-  // ── Sync ink relationship vars → users/{uid}.relationships ────────────────
   async function syncRelationships(story: Story) {
     if (!user?.uid) return;
     const userRef  = doc(db, 'users', user.uid);
-    const userSnap = await getDoc(userRef);
-    const rels: any[] = userSnap.data()?.relationships ?? [];
-
+    const snap     = await getDoc(userRef);
+    const rels: any[] = snap.data()?.relationships ?? [];
     let dirty = false;
     const updated = rels.map(r => {
       const varName = Object.entries(INK_VAR_TO_NPC).find(([, id]) => id === r.npcId)?.[0];
       if (!varName) return r;
       try {
-        const inkVal = story.variablesState[varName] as number;
-        if (typeof inkVal === 'number' && inkVal !== r.value) {
+        const val = story.variablesState[varName] as number;
+        if (typeof val === 'number' && val !== r.value) {
           dirty = true;
-          return { ...r, value: Math.max(-100, Math.min(100, inkVal)) };
+          return { ...r, value: Math.max(-100, Math.min(100, val)) };
         }
       } catch (_) {}
       return r;
     });
-
     if (dirty) await setDoc(userRef, { relationships: updated }, { merge: true });
   }
 
-  // ── Persist ink state to Firestore ────────────────────────────────────────
-  async function persistState(story: Story, newClueIds: string[]) {
+  async function persistState(story: Story, newClues: string[]) {
     if (!user?.uid) return;
     setSaving(true);
     try {
-      const progressRef = doc(db, 'users', user.uid, 'progress', clientId);
+      const ref    = doc(db, 'users', user.uid, 'progress', clientId);
       const update: Record<string, any> = {
         inkStateJson:  story.state.ToJson(),
         lastSeasonId:  seasonId,
         lastEpisodeId: episodeId,
         lastPlayedAt:  serverTimestamp(),
       };
-      if (newClueIds.length > 0) update.cluesFound = arrayUnion(...newClueIds);
-      await setDoc(progressRef, update, { merge: true });
+      if (newClues.length > 0) update.cluesFound = arrayUnion(...newClues);
+      await setDoc(ref, update, { merge: true });
     } finally {
       setSaving(false);
     }
   }
 
-  // ── Episode end ────────────────────────────────────────────────────────────
   async function handleEpisodeEnd() {
     if (!user?.uid) return;
-    const progressRef = doc(db, 'users', user.uid, 'progress', clientId);
-    const snap  = await getDoc(progressRef);
+    const ref    = doc(db, 'users', user.uid, 'progress', clientId);
+    const snap   = await getDoc(ref);
     const played = (snap.data()?.episodesPlayedCount ?? 0) as number;
     await setDoc(
-      progressRef,
+      ref,
       {
         completedEpisodes:   arrayUnion(episodeId),
         episodesPlayedCount: played + 1,
-        inkStateJson:        null,   // clear so next episode starts fresh
+        inkStateJson:        null,
         lastPlayedAt:        serverTimestamp(),
       },
       { merge: true }
@@ -258,7 +346,7 @@ export default function EpisodeScreen() {
     setComplete(true);
   }
 
-  // ── Loading ────────────────────────────────────────────────────────────────
+  // ── Render guards ──────────────────────────────────────────────────────────
   if (loading) {
     return (
       <View style={styles.container}>
@@ -270,14 +358,11 @@ export default function EpisodeScreen() {
   if (!storyRef.current) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorText}>
-          Story not found.{'\n'}Run: node scripts/compile-ink.mjs
-        </Text>
+        <Text style={styles.errorText}>Story not found.{'\n'}Run: node scripts/compile-ink.mjs</Text>
       </View>
     );
   }
 
-  // ── Episode complete ───────────────────────────────────────────────────────
   if (complete) {
     return (
       <View style={styles.container}>
@@ -298,13 +383,20 @@ export default function EpisodeScreen() {
   }
 
   // ── Derive render mode ─────────────────────────────────────────────────────
+  const story      = storyRef.current;
   const isChoice   = choices.length > 0;
   const isDialogue = !isChoice && tags.type === 'dialogue';
+  const isCinematic = !isChoice && tags.type === 'video';
 
-  // ── Render scene ───────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      <View style={styles.bgDark} />
+
+      {/* Background video (lip-sync or cinematic) or dark fill */}
+      {videoUri
+        ? <SceneVideo uri={videoUri} onEnd={() => { if (videoAutoEnd) doAdvance(story, tags); }} />
+        : <View style={styles.bgDark} />
+      }
       <View style={styles.overlay} />
 
       {/* Top bar */}
@@ -325,38 +417,36 @@ export default function EpisodeScreen() {
 
       {saving && <View style={styles.savingPill}><ActivityIndicator size="small" color={Colors.accent} /></View>}
 
-      {/* ── Image / narration — tap to advance ────────────────────────────── */}
-      {!isChoice && !isDialogue && (
-        <TouchableOpacity
-          style={styles.tapZone}
-          activeOpacity={1}
-          onPress={() => storyRef.current && advance(storyRef.current)}
-        >
-          {displayText ? (
-            <View style={styles.narrationBox}>
-              <Text style={styles.narrationText}>{displayText}</Text>
-              <Text style={styles.tapHintText}>Tap to continue</Text>
-            </View>
-          ) : (
-            <View style={styles.tapHintWrap}>
-              <Text style={styles.tapHintText}>Tap to continue</Text>
-            </View>
-          )}
+      {/* Cinematic: skip button only */}
+      {isCinematic && (
+        <TouchableOpacity style={styles.skipBtn} onPress={() => doAdvance(story, tags)}>
+          <Text style={styles.skipText}>Skip ›</Text>
         </TouchableOpacity>
       )}
 
-      {/* ── Dialogue — tap to advance ─────────────────────────────────────── */}
+      {/* Image / narration: tap zone */}
+      {!isChoice && !isDialogue && !isCinematic && (
+        <TouchableOpacity style={styles.tapZone} activeOpacity={1}
+          onPress={() => doAdvance(story, tags)}>
+          {displayText
+            ? <View style={styles.narrationBox}>
+                <Text style={styles.narrationText}>{displayText}</Text>
+                <Text style={styles.tapHintText}>Tap to continue</Text>
+              </View>
+            : <View style={styles.tapHintWrap}>
+                <Text style={styles.tapHintText}>Tap to continue</Text>
+              </View>
+          }
+        </TouchableOpacity>
+      )}
+
+      {/* Dialogue: tap zone with speaker box */}
       {isDialogue && (
-        <TouchableOpacity
-          style={styles.tapZone}
-          activeOpacity={1}
-          onPress={() => storyRef.current && advance(storyRef.current)}
-        >
+        <TouchableOpacity style={styles.tapZone} activeOpacity={1}
+          onPress={() => doAdvance(story, tags)}>
           <View style={styles.dialogueBox}>
             {tags.speaker && (
-              <Text style={styles.speakerName}>
-                {NPC_NAMES[tags.speaker] ?? tags.speaker}
-              </Text>
+              <Text style={styles.speakerName}>{NPC_NAMES[tags.speaker] ?? tags.speaker}</Text>
             )}
             <Text style={styles.dialogueText}>{displayText}</Text>
             <Text style={styles.tapHintText}>Tap to continue</Text>
@@ -364,38 +454,25 @@ export default function EpisodeScreen() {
         </TouchableOpacity>
       )}
 
-      {/* ── Choice — buttons ──────────────────────────────────────────────── */}
+      {/* Choice: button list */}
       {isChoice && (
         <View style={styles.choiceWrap}>
           {tags.speaker && (
-            <Text style={styles.speakerName}>
-              {NPC_NAMES[tags.speaker] ?? tags.speaker}
-            </Text>
+            <Text style={styles.speakerName}>{NPC_NAMES[tags.speaker] ?? tags.speaker}</Text>
           )}
-          {displayText ? (
-            <Text style={styles.choiceContext}>{displayText}</Text>
-          ) : null}
+          {displayText ? <Text style={styles.choiceContext}>{displayText}</Text> : null}
           <Text style={styles.choicePrompt}>What do you do?</Text>
           {choices.map(c => (
-            <TouchableOpacity
-              key={c.index}
-              style={styles.choiceBtn}
-              activeOpacity={0.75}
-              onPress={() => storyRef.current && advance(storyRef.current, c.index, c.text)}
-            >
+            <TouchableOpacity key={c.index} style={styles.choiceBtn} activeOpacity={0.75}
+              onPress={() => doAdvance(story, tags, c.index, c.text)}>
               <Text style={styles.choiceBtnText}>{c.text}</Text>
             </TouchableOpacity>
           ))}
         </View>
       )}
 
-      {/* ── Clue review modal ─────────────────────────────────────────────── */}
-      <Modal
-        visible={showClues}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowClues(false)}
-      >
+      {/* Clue review modal */}
+      <Modal visible={showClues} transparent animationType="slide" onRequestClose={() => setShowClues(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
@@ -404,21 +481,21 @@ export default function EpisodeScreen() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            {cluesFound.length === 0 ? (
-              <Text style={styles.noClues}>No clues discovered yet.</Text>
-            ) : (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {cluesFound.map((id, i) => (
-                  <View key={id} style={styles.clueItem}>
-                    <Text style={styles.clueItemNum}>{i + 1}</Text>
-                    <Text style={styles.clueItemId}>{id.replace(/_/g, ' ')}</Text>
-                  </View>
-                ))}
-              </ScrollView>
-            )}
+            {cluesFound.length === 0
+              ? <Text style={styles.noClues}>No clues discovered yet.</Text>
+              : <ScrollView showsVerticalScrollIndicator={false}>
+                  {cluesFound.map((id, i) => (
+                    <View key={id} style={styles.clueItem}>
+                      <Text style={styles.clueItemNum}>{i + 1}</Text>
+                      <Text style={styles.clueItemId}>{id.replace(/_/g, ' ')}</Text>
+                    </View>
+                  ))}
+                </ScrollView>
+            }
           </View>
         </View>
       </Modal>
+
     </View>
   );
 }
@@ -427,13 +504,9 @@ export default function EpisodeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0D0D0D' },
   bgDark:    { ...StyleSheet.absoluteFillObject, backgroundColor: '#0D0D0D' },
-  overlay:   { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
+  overlay:   { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
 
-  topBar: {
-    position: 'absolute', top: 0, left: 0, right: 0,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 8,
-  },
+  topBar:        { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 8 },
   exitBtn:       { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   exitText:      { fontSize: 18, color: Colors.textMuted },
   topTitle:      { fontSize: 13, color: Colors.textMuted, fontWeight: '600', flex: 1, textAlign: 'center' },
@@ -443,31 +516,19 @@ const styles = StyleSheet.create({
   clueBadgeText: { fontSize: 9, fontWeight: '800', color: '#0D0D0D' },
   savingPill:    { position: 'absolute', top: 60, right: 16 },
 
+  skipBtn:  { position: 'absolute', top: 60, right: 16, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
+  skipText: { fontSize: 13, color: Colors.textMuted, fontWeight: '600' },
+
   tapZone:      { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
   tapHintWrap:  { padding: 32, alignItems: 'center' },
   tapHintText:  { fontSize: 11, color: Colors.textMuted, textAlign: 'right', marginTop: 6 },
-
-  narrationBox: {
-    backgroundColor: 'rgba(13,13,13,0.85)',
-    borderTopWidth: 1, borderTopColor: Colors.border,
-    padding: 24, paddingBottom: 48, gap: 10,
-  },
-  narrationText: { fontSize: 16, color: Colors.textLight, lineHeight: 26, fontStyle: 'italic' },
-
-  dialogueBox: {
-    backgroundColor: 'rgba(13,13,13,0.93)',
-    borderTopWidth: 1, borderTopColor: Colors.border,
-    padding: 24, paddingBottom: 48, gap: 10,
-  },
+  narrationBox: { backgroundColor: 'rgba(13,13,13,0.85)', borderTopWidth: 1, borderTopColor: Colors.border, padding: 24, paddingBottom: 48, gap: 10 },
+  narrationText:{ fontSize: 16, color: Colors.textLight, lineHeight: 26, fontStyle: 'italic' },
+  dialogueBox:  { backgroundColor: 'rgba(13,13,13,0.88)', borderTopWidth: 1, borderTopColor: Colors.border, padding: 24, paddingBottom: 48, gap: 10 },
   speakerName:  { fontSize: 12, color: Colors.accent, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   dialogueText: { fontSize: 17, color: Colors.textLight, lineHeight: 27 },
 
-  choiceWrap: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(13,13,13,0.96)',
-    borderTopWidth: 1, borderTopColor: Colors.border,
-    padding: 20, paddingBottom: 48, gap: 10,
-  },
+  choiceWrap:    { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(13,13,13,0.96)', borderTopWidth: 1, borderTopColor: Colors.border, padding: 20, paddingBottom: 48, gap: 10 },
   choiceContext: { fontSize: 15, color: Colors.textLight, lineHeight: 22, marginBottom: 4 },
   choicePrompt:  { fontSize: 11, color: Colors.textMuted, letterSpacing: 1, textTransform: 'uppercase' },
   choiceBtn:     { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.accent + '55', borderRadius: 12, padding: 16 },
