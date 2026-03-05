@@ -14,7 +14,7 @@ import { Audio } from 'expo-av';
 import { DeviceMotion } from 'expo-sensors';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, getDoc, updateDoc, deleteField } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteField } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 import { Colors } from '@/constants/colors';
 import { signOut } from '@/services/auth';
@@ -189,7 +189,7 @@ export default function HomeScreen() {
           onPress: async () => {
             await AsyncStorage.multiRemove([profileKey, characterKey]);
             if (user?.uid) {
-              await updateDoc(doc(db, 'users', user.uid), { character: deleteField() });
+              await setDoc(doc(db, 'users', user.uid), { character: deleteField() }, { merge: true });
             }
             setShowProfile(false);
             router.replace('/(main)');
