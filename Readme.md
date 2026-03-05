@@ -65,27 +65,44 @@ ELEVENLABS_API_KEY               (server-side / content pipeline only)
 All images, videos, and pre-generated audio live in S3.
 
 ### Bucket structure
+
+All episode assets are named by **sceneId** — the same ID used in the Firestore scene document. This means the app can always derive any asset URL from the sceneId alone, with no guesswork.
+
 ```
 s3://detectives-dilemma-media/
   clients/{clientId}/
     avatar.png
     seasons/{seasonId}/
       episodes/{episodeId}/
-        scene_{n}.jpg          ← story scene images
-        video_{n}.mp4          ← cinematic video clips
-        dialogue_{n}.mp3       ← pre-generated ElevenLabs audio
+        {sceneId}_bg.jpg       ← background image for that scene node
+        {sceneId}_audio.mp3    ← pre-generated ElevenLabs dialogue for that scene
+        {sceneId}_video.mp4    ← cinematic clip for that scene
   characters/
     man-young.png
     woman-mid.png
     ... (6 character portraits)
 ```
 
+### File naming rules
+- Every asset is prefixed with its **sceneId** (e.g. `intro_bg.jpg`, `choice_clue1_audio.mp3`)
+- If a scene has no image, no `_bg.jpg` file exists — the scene doc's `imageUrl` field will be `null`
+- One sceneId → at most one `_bg.jpg`, one `_audio.mp3`, one `_video.mp4`
+- Scenes can use any combination: image only, video only, image + audio, all three
+
+### App asset URL pattern
+```
+fullUrl = episode.mediaBaseUrl + sceneId + '_bg.jpg'
+          episode.mediaBaseUrl + sceneId + '_audio.mp3'
+          episode.mediaBaseUrl + sceneId + '_video.mp4'
+```
+
 ### App download flow
-1. Firestore episode doc contains `mediaBaseUrl` (S3 or CDN URL prefix)
-2. App builds full asset URLs: `mediaBaseUrl + /scene_1.jpg`
-3. Images loaded via `<Image source={{ uri }}>`
-4. Audio/video played via `expo-av`
-5. Phase 5: Add Cloudflare CDN in front of S3 for global low-latency
+1. Firestore episode doc contains `mediaBaseUrl` (S3/CDN folder prefix, trailing slash included)
+2. App fetches scenes from `episodes/{episodeId}/scenes/` subcollection
+3. For each scene, app derives asset URLs: `mediaBaseUrl + sceneId + '_bg.jpg'` etc.
+4. Images loaded via `<Image source={{ uri }}>`
+5. Audio/video played via `expo-av`
+6. Phase 5: Add Cloudflare CDN in front of S3 for global low-latency
 
 ### Env variables needed
 ```
@@ -253,60 +270,69 @@ clients/{clientId}/seasons/{seasonId}
 clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}
   title:             string
   order:             number        ← global seq across all seasons (1,2,3…) for free tier count
+  startSceneId:      string        ← EXPLICIT ENTRY POINT — graph runner always starts here
   unlockCondition:   string        ← e.g. 'Complete Episode 2'
-  mediaBaseUrl:      string        ← S3 base URL for all assets in this episode
-  scenes: [          ← SCENE GRAPH: each scene is a node, connected by nextSceneId / choices
+  mediaBaseUrl:      string        ← S3 folder prefix (trailing slash), e.g.
+                                      'https://cdn.example.com/clients/lady-ashworth/seasons/s1/episodes/e1/'
+
+  ← scenes are stored in a SUBCOLLECTION, not an array field, to avoid Firestore 1MB doc limit
+
+clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}/scenes/{sceneId}
+  ← Each scene is its own Firestore document. sceneId matches the asset filename prefix in S3.
+  ← Graph runner: start at episode.startSceneId, follow nextSceneId / choices until type='episode_end'
+
+  sceneId:       string        ← document ID, also used as S3 filename prefix
+  type:          'video' | 'image' | 'dialogue' | 'choice' | 'minigame' | 'episode_end'
+
+  ── video ──────────────────────────────────────────────────────────────────────
+  ← S3 file: mediaBaseUrl + sceneId + '_video.mp4'
+  nextSceneId?:  string        ← auto-advance when video ends
+
+  ── image + dialogue (can be combined, or image-only, or dialogue-only) ────────
+  ← S3 files: mediaBaseUrl + sceneId + '_bg.jpg'
+              mediaBaseUrl + sceneId + '_audio.mp3'
+  imageUrl?:     string        ← null if scene has no background image
+  dialogueText?: string
+  audioUrl?:     string        ← null if scene has no voiced dialogue
+  speakerNpcId?: string
+  nextSceneId?:  string        ← advance on player tap
+
+  ── choice (branches ALWAYS converge back to a single common scene) ───────────
+  ← A choice node has no image/video of its own — the preceding scene sets the visual context
+  choices?: [
     {
-      sceneId:       string
-      type:          'video' | 'image' | 'dialogue' | 'choice' | 'minigame' | 'episode_end'
+      text:        string
+      nextSceneId: string      ← every branch eventually reaches the same convergence scene
 
-      ── video ──────────────────────────────────────────────────────────────
-      videoUrl?:     string        ← S3 MP4; can appear anywhere, multiple times per episode
-      nextSceneId?:  string        ← auto-advance when video ends
-
-      ── image + dialogue (can be combined) ─────────────────────────────────
-      imageUrl?:     string        ← S3 JPG background
-      dialogueText?: string
-      audioUrl?:     string        ← pre-generated ElevenLabs MP3 (S3)
-      speakerNpcId?: string
-      nextSceneId?:  string        ← advance on player tap
-
-      ── choice (branches always converge back to a common scene) ───────────
-      choices?: [
-        {
-          text:        string
-          nextSceneId: string      ← all branches lead back to a common scene
-
-          immediate?: {
-            relationshipEffects?: [{ npcId: string; delta: number }]
-            clueGrant?:           string[]   ← clue IDs revealed now
-          }
-          deferred?: {
-            clueMissed?:          string[]   ← stored in progress.clueMissed, surfaces later
-            relationshipEffects?: [{ npcId: string; delta: number; triggerAtScene: string }]
-          }
-        }
-      ]
-
-      ── minigame ───────────────────────────────────────────────────────────
-      minigameType?:   'hidden_objects' | 'rps_combat' | 'interrogation'
-      minigameConfig?: object      ← difficulty, items to find, suspect data etc.
-      nextSceneId?:    string      ← SAME path regardless of win or lose
-
-      onWin?: {
+      immediate?: {
         relationshipEffects?: [{ npcId: string; delta: number }]
-        clueGrant?:           string[]
+        clueGrant?:           string[]   ← clue IDs revealed immediately
       }
-      onLose?: {
-        relationshipEffects?: [{ npcId: string; delta: number }]   ← negative deltas
-        clueMissed?:          string[]   ← stored in progress.clueMissed
+      deferred?: {
+        clueMissed?:          string[]   ← stored in progress.clueMissed, surfaces in future scenes
+        relationshipEffects?: [{ npcId: string; delta: number; triggerAtScene: string }]
       }
-
-      ── episode_end ────────────────────────────────────────────────────────
-      ← triggers: save progress, increment episodesPlayedCount,
-                  check entitlement for next episode, apply any pending deferred effects
     }
   ]
+
+  ── minigame ───────────────────────────────────────────────────────────────────
+  minigameType?:   'hidden_objects' | 'rps_combat' | 'interrogation'
+  minigameConfig?: object      ← difficulty, items to find, suspect data etc.
+  nextSceneId?:    string      ← SAME scene regardless of win or lose (outcome tracked via onWin/onLose)
+
+  onWin?: {
+    relationshipEffects?: [{ npcId: string; delta: number }]
+    clueGrant?:           string[]
+  }
+  onLose?: {
+    relationshipEffects?: [{ npcId: string; delta: number }]   ← negative deltas
+    clueMissed?:          string[]   ← stored in progress.clueMissed
+  }
+
+  ── episode_end ────────────────────────────────────────────────────────────────
+  ← terminal node — no nextSceneId
+  ← triggers: save progress, increment episodesPlayedCount,
+              apply any pending deferred effects, check entitlement for next episode
 
 npcs/{npcId}                       ← TOP-LEVEL GLOBAL (clients, suspects, witnesses, etc.)
   name:              string
@@ -337,6 +363,43 @@ npcs/{npcId}                       ← TOP-LEVEL GLOBAL (clients, suspects, witn
 | `none` | any | default, or after romance ends |
 | `flirting` | +40 | triggered by specific choice or scene |
 | `dating` | +70 | triggered by specific choice or scene |
+
+---
+
+### Scene Graph Runner (Episode Playback Engine)
+
+Every episode has a **fixed start and end** — the middle is free-form and can change between episodes:
+
+```
+START ──► startSceneId (always the entry point, defined on the episode doc)
+           │
+           ▼
+        [ any sequence of: video → image → dialogue → choice → minigame ]
+           │    branches converge back to common scenes
+           │    new scene types can be added or removed without changing the runner
+           ▼
+END   ──► type: 'episode_end' (always the terminal node — no nextSceneId)
+```
+
+Graph runner pseudocode:
+```typescript
+let currentSceneId = episode.startSceneId;
+
+while (true) {
+  const scene = await getScene(episodeId, currentSceneId);
+
+  if (scene.type === 'episode_end') {
+    await handleEpisodeEnd();   // save, increment count, apply deferred effects
+    break;
+  }
+
+  await renderScene(scene);    // show video / image+dialogue / choice UI / minigame
+  currentSceneId = await advance(scene);  // nextSceneId or player-chosen branch
+  await saveProgress(currentSceneId);     // save after EVERY node
+}
+```
+
+The runner is **data-driven** — adding a new scene type or reordering scenes only requires updating Firestore, not changing app code.
 
 ---
 
@@ -448,7 +511,8 @@ Player's own name always displayed — detective template only affects appearanc
 - [x] Clients tab — client card grid (hardcoded, needs Firestore)
 - [x] Client detail screen — Episodes + Gallery inner tabs (hardcoded, needs Firestore)
 - [x] Profile tab — stats + relationship matrix (seeded to Firestore)
-- [x] Data model finalised — clients, seasons, episodes, npcs, entitlements
+- [x] Data model finalised — clients, seasons, episodes (scenes subcollection), npcs, entitlements
+- [x] Scene graph design: explicit `startSceneId`, scenes as subcollection (not array), sceneId-anchored S3 filenames
 - [ ] **NEXT:** Seed `clients/` + `npcs/` collections into Firestore
 - [ ] Wire `clients.tsx` and `client/[id].tsx` to read from Firestore
 - [ ] Firestore Security Rules updated for `clients/` and `npcs/`

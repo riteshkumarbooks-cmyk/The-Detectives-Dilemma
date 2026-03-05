@@ -10,6 +10,7 @@ import {
   Dimensions,
   SafeAreaView,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { DeviceMotion } from 'expo-sensors';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -52,37 +53,37 @@ const CHARACTERS = [
     id:       'man-young',
     name:     'Jake Carter',
     subtitle: 'Male · 20–30',
-    image:    require('../../../assets/characters/man-young.png') as number,
+    image:    require('../../../assets/characters/man-young.gif') as number,
   },
   {
     id:       'man-mid',
     name:     'Marcus Reid',
     subtitle: 'Male · 30–45',
-    image:    require('../../../assets/characters/man-mid.png') as number,
+    image:    require('../../../assets/characters/man-mid.gif') as number,
   },
   {
     id:       'man-senior',
     name:     'Victor Kane',
     subtitle: 'Male · 45–70',
-    image:    require('../../../assets/characters/man-senior.png') as number,
+    image:    require('../../../assets/characters/man-senior.gif') as number,
   },
   {
     id:       'woman-young',
     name:     'Zoe Hart',
     subtitle: 'Female · 20–30',
-    image:    require('../../../assets/characters/woman-young.png') as number,
+    image:    require('../../../assets/characters/woman-young.gif') as number,
   },
   {
     id:       'woman-mid',
     name:     'Diana Cross',
     subtitle: 'Female · 30–45',
-    image:    require('../../../assets/characters/woman-mid.png') as number,
+    image:    require('../../../assets/characters/woman-mid.gif') as number,
   },
   {
     id:       'woman-senior',
     name:     'Eleanor Voss',
     subtitle: 'Female · 45–70',
-    image:    require('../../../assets/characters/woman-senior.png') as number,
+    image:    require('../../../assets/characters/woman-senior.gif') as number,
   },
 ] as const;
 
@@ -107,6 +108,27 @@ export default function HomeScreen() {
   // ── Parallax depth refs ────────────────────────────────────────────────────
   const bgShift   = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const charShift = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+
+  // ── Background music ──────────────────────────────────────────────────────
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  useEffect(() => {
+    async function startMusic() {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,   // play even when iPhone is on silent
+        staysActiveInBackground: false,
+      });
+      const { sound } = await Audio.Sound.createAsync(
+        require('../../../assets/audio/music/Shadow_Alley_Nocturne.wav'),
+        { shouldPlay: true, isLooping: true, volume: 0.5 }
+      );
+      soundRef.current = sound;
+    }
+    startMusic();
+    return () => {
+      soundRef.current?.unloadAsync();
+    };
+  }, []);
 
   useEffect(() => {
     let sub: ReturnType<typeof DeviceMotion.addListener> | null = null;
