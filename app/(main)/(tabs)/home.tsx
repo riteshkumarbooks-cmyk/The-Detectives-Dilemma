@@ -287,6 +287,11 @@ export default function HomeScreen() {
             <Text style={styles.resetBtnText}>Reset Detective</Text>
           </TouchableOpacity>
 
+          {/* DEV: ink narrative demo */}
+          <TouchableOpacity style={styles.signOutBtn} onPress={() => router.push('/(main)/inkdemo')}>
+            <Text style={[styles.signOutText, { color: Colors.accent }]}>🎭 Ink Demo (dev)</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.signOutBtn} onPress={() => signOut()}>
             <Text style={styles.signOutText}>Sign Out</Text>
           </TouchableOpacity>

@@ -213,26 +213,28 @@ users/{uid}
   ]
 
 users/{uid}/progress/{clientId}
-  currentSeasonId:      string
-  currentEpisodeId:     string
-  currentSceneId:       string     ← resume from exact scene if app closes
-  completedEpisodes:    string[]
-  episodesPlayedCount:  number     ← total played, compared to client.freeEpisodeCount
+  inkStateJson:         string     ← full serialised Ink state (story.state.ToJson())
+                                      enables exact-position resume anywhere in the story
+                                      reset to null when episode completes (next episode starts fresh)
+  lastSeasonId:         string
+  lastEpisodeId:        string
   lastPlayedAt:         Timestamp
+  completedEpisodes:    string[]
+  episodesPlayedCount:  number     ← total played across all seasons, vs client.freeEpisodeCount
 
-  choices: [                       ← PERMANENT record of every choice ever made
-    {
-      episodeId:   string
-      sceneId:     string
-      choiceIndex: number
-      choiceText:  string
-      madeAt:      Timestamp
+  choicesMade: {                   ← NAMED MAP — O(1) lookup by scene knot ID
+    [sceneKnotId: string]: {       ← key = Ink knot name (= # scene: tag value)
+      index:   number              ← which choice the player picked (0-based)
+      text:    string              ← the full choice text
+      madeAt:  Timestamp
     }
-  ]
+  }
+  ← sceneKnotId is cross-season and cross-episode — one flat map per client
+  ← e.g. choicesMade["ep1_choice_trust"].index === 1 (player smiled warmly)
+  ← future scenes query this map to branch on past decisions
 
-  cluesFound:  string[]            ← clue IDs discovered through correct choices / mini-game wins
-  clueMissed:  string[]            ← clue IDs lost through wrong choices / mini-game losses
-                                      (surfaces as consequences in future scenes/episodes)
+  cluesFound:  string[]            ← clue IDs discovered; grows forever, never removed
+  clueMissed:  string[]            ← clue IDs the player failed to discover (wrong choice / mini-game loss)
 
 users/{uid}/entitlements/season_{clientId}_{seasonId}
   type:           'season_purchased'
@@ -270,69 +272,12 @@ clients/{clientId}/seasons/{seasonId}
 clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}
   title:             string
   order:             number        ← global seq across all seasons (1,2,3…) for free tier count
-  startSceneId:      string        ← EXPLICIT ENTRY POINT — graph runner always starts here
   unlockCondition:   string        ← e.g. 'Complete Episode 2'
-  mediaBaseUrl:      string        ← S3 folder prefix (trailing slash), e.g.
-                                      'https://cdn.example.com/clients/lady-ashworth/seasons/s1/episodes/e1/'
+  mediaBaseUrl:      string        ← S3 folder prefix (trailing slash) for all assets in this episode
 
-  ← scenes are stored in a SUBCOLLECTION, not an array field, to avoid Firestore 1MB doc limit
-
-clients/{clientId}/seasons/{seasonId}/episodes/{episodeId}/scenes/{sceneId}
-  ← Each scene is its own Firestore document. sceneId matches the asset filename prefix in S3.
-  ← Graph runner: start at episode.startSceneId, follow nextSceneId / choices until type='episode_end'
-
-  sceneId:       string        ← document ID, also used as S3 filename prefix
-  type:          'video' | 'image' | 'dialogue' | 'choice' | 'minigame' | 'episode_end'
-
-  ── video ──────────────────────────────────────────────────────────────────────
-  ← S3 file: mediaBaseUrl + sceneId + '_video.mp4'
-  nextSceneId?:  string        ← auto-advance when video ends
-
-  ── image + dialogue (can be combined, or image-only, or dialogue-only) ────────
-  ← S3 files: mediaBaseUrl + sceneId + '_bg.jpg'
-              mediaBaseUrl + sceneId + '_audio.mp3'
-  imageUrl?:     string        ← null if scene has no background image
-  dialogueText?: string
-  audioUrl?:     string        ← null if scene has no voiced dialogue
-  speakerNpcId?: string
-  nextSceneId?:  string        ← advance on player tap
-
-  ── choice (branches ALWAYS converge back to a single common scene) ───────────
-  ← A choice node has no image/video of its own — the preceding scene sets the visual context
-  choices?: [
-    {
-      text:        string
-      nextSceneId: string      ← every branch eventually reaches the same convergence scene
-
-      immediate?: {
-        relationshipEffects?: [{ npcId: string; delta: number }]
-        clueGrant?:           string[]   ← clue IDs revealed immediately
-      }
-      deferred?: {
-        clueMissed?:          string[]   ← stored in progress.clueMissed, surfaces in future scenes
-        relationshipEffects?: [{ npcId: string; delta: number; triggerAtScene: string }]
-      }
-    }
-  ]
-
-  ── minigame ───────────────────────────────────────────────────────────────────
-  minigameType?:   'hidden_objects' | 'rps_combat' | 'interrogation'
-  minigameConfig?: object      ← difficulty, items to find, suspect data etc.
-  nextSceneId?:    string      ← SAME scene regardless of win or lose (outcome tracked via onWin/onLose)
-
-  onWin?: {
-    relationshipEffects?: [{ npcId: string; delta: number }]
-    clueGrant?:           string[]
-  }
-  onLose?: {
-    relationshipEffects?: [{ npcId: string; delta: number }]   ← negative deltas
-    clueMissed?:          string[]   ← stored in progress.clueMissed
-  }
-
-  ── episode_end ────────────────────────────────────────────────────────────────
-  ← terminal node — no nextSceneId
-  ← triggers: save progress, increment episodesPlayedCount,
-              apply any pending deferred effects, check entitlement for next episode
+  ← NO scenes subcollection — narrative logic lives in the Ink script, not Firestore
+  ← The app bundles compiled .ink.json files (src/config/storyMap.ts maps episodeId → JSON)
+  ← Phase 5: large stories fetched from S3 instead of bundled
 
 npcs/{npcId}                       ← TOP-LEVEL GLOBAL (clients, suspects, witnesses, etc.)
   name:              string
@@ -366,53 +311,69 @@ npcs/{npcId}                       ← TOP-LEVEL GLOBAL (clients, suspects, witn
 
 ---
 
-### Scene Graph Runner (Episode Playback Engine)
+### 🎭 Narrative Engine: Ink + inkjs
 
-Every episode has a **fixed start and end** — the middle is free-form and can change between episodes:
+Episodes are authored in **[Ink](https://www.inklestudios.com/ink/)** — a scripting language designed for interactive stories. Writers use the **[Inky editor](https://github.com/inkle/inky)** (free, desktop) to write and test stories, then compile to JSON for the app.
 
 ```
-START ──► startSceneId (always the entry point, defined on the episode doc)
-           │
-           ▼
-        [ any sequence of: video → image → dialogue → choice → minigame ]
-           │    branches converge back to common scenes
-           │    new scene types can be added or removed without changing the runner
-           ▼
-END   ──► type: 'episode_end' (always the terminal node — no nextSceneId)
+Writer uses Inky editor (free)
+  └── writes duchess-ep1.ink
+      └── node scripts/compile-ink.mjs
+          └── assets/stories/duchess-ep1.ink.json   ← bundled in app
+              └── inkjs Story object at runtime
 ```
 
-Graph runner pseudocode:
-```typescript
-let currentSceneId = episode.startSceneId;
+#### Tag protocol (drives React Native rendering)
+Each Ink line or knot can carry tags that tell the engine how to render it:
 
-while (true) {
-  const scene = await getScene(episodeId, currentSceneId);
+```ink
+=== ep1_duchess_speaks ===
+# scene: ep1_duchess_speaks     ← S3 asset prefix: {mediaBaseUrl}{scene}_bg.jpg / _lipsync.mp4
+# type: dialogue                ← render as dialogue box (tap to continue)
+# speaker: duchess-margaux      ← NPC lip-sync video + name label
+# emotion: neutral              ← animation variant (neutral | stressed | happy | fearful | angry | suspicious)
+"Detective. I am glad you came alone..."
+-> ep1_choice_trust
+```
 
-  if (scene.type === 'episode_end') {
-    await handleEpisodeEnd();   // save, increment count, apply deferred effects
-    break;
-  }
+#### Variable → Firestore sync
+Ink variables map directly to NPC relationship scores in `users/{uid}.relationships`:
 
-  await renderScene(scene);    // show video / image+dialogue / choice UI / minigame
-  currentSceneId = await advance(scene);  // nextSceneId or player-chosen branch
-  await saveProgress(currentSceneId);     // save after EVERY node
+```ink
+VAR duchess_trust = 50          ← initial value matches Firestore default
+
++ [Smile warmly.]
+  ~ duchess_trust += 10         ← inkjs updates the variable
+  -> ep1_after_choice           ← after advance(), engine reads duchess_trust
+                                    and writes updated value to Firestore relationships[]
+```
+
+Variable ↔ NPC mapping is defined in `src/config/storyMap.ts` (`INK_VAR_TO_NPC`).
+
+#### Choices saved to named map (O(1) lookup)
+After a player taps a choice, the engine writes to `progress/{clientId}.choicesMade`:
+
+```
+choicesMade["ep1_choice_trust"] = { index: 1, text: "Smile warmly...", madeAt: Timestamp }
+```
+
+Future scenes in ANY episode of the SAME client can branch on this:
+
+```ink
+{ choicesMade["ep1_choice_trust"].index == 1:
+    "I remember how warmly you greeted me that first day..."
 }
 ```
 
-The runner is **data-driven** — adding a new scene type or reordering scenes only requires updating Firestore, not changing app code.
+(In Ink: use a VAR that gets set once and persists in inkStateJson)
 
----
+#### Save & resume
+After every scene advance:
+- `story.state.ToJson()` → `inkStateJson` in Firestore (typically ~500 bytes)
+- On next launch: `story.state.LoadJson(inkStateJson)` → exact resume
 
-### Scene Save Strategy
-
-Save to `users/{uid}/progress/{clientId}` is triggered **after every scene node completes**:
-- ✅ Video ends (playback complete)
-- ✅ Dialogue ends (player taps to advance)
-- ✅ Choice made (choice recorded, relationship effects applied)
-- ✅ Mini-game ends (win or lose result recorded)
-- ✅ episode_end reached
-
-This ensures the player can close the app at any point and resume from the exact scene.
+#### Mini-games
+Mini-games are NOT handled by Ink. When the engine encounters `# type: minigame`, it launches a React Native mini-game component. The result (win/lose) is passed back and the story continues via `story.ChooseChoiceIndex()` with 0=win, 1=lose.
 
 ---
 

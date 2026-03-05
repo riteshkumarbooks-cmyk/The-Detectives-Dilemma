@@ -23,6 +23,7 @@
     "expo-status-bar": "~3.0.9",
     "expo-web-browser": "~15.0.10",
     "firebase": "^11.10.0",
+    "inkjs": "^2.4.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0",

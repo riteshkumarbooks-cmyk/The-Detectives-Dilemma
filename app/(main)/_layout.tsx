@@ -6,7 +6,8 @@ export default function MainLayout() {
       <Stack.Screen name="index"        />
       <Stack.Screen name="(tabs)"       />
       <Stack.Screen name="client/[id]"  options={{ animation: 'slide_from_right' }} />
-      <Stack.Screen name="episode"       options={{ animation: 'fade' }} />
+      <Stack.Screen name="episode"        options={{ animation: 'fade' }} />
+      <Stack.Screen name="inkdemo"        options={{ animation: 'slide_from_right' }} />
     </Stack>
   );
 }
