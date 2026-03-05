@@ -15,38 +15,17 @@ const CLIENT_DATA: Record<string, {
   name: string; tagline: string; avatar: string;
   seasons: { id: string; title: string; episodes: { id: string; title: string; isLocked: boolean }[] }[]
 }> = {
-  'lady-ashworth': {
-    name:    'Lady Eleanor Ashworth',
-    tagline: 'The Missing Heirloom',
-    avatar:  '👩‍🦳',
+  'duchess-margaux': {
+    name:    'Duchess Margaux de Valois',
+    tagline: "The Crown's Deception",
+    avatar:  '👑',
     seasons: [
       {
-        id: 's1', title: 'Season 1 · The Ashworth Manor',
+        id: 'season-1', title: 'Season 1 · Shadows of the Throne',
         episodes: [
-          { id: 'e1', title: 'Ep 1 · A Curious Disappearance', isLocked: false },
-          { id: 'e2', title: 'Ep 2 · The Servants\' Quarters',  isLocked: true  },
-          { id: 'e3', title: 'Ep 3 · Shadows at Midnight',      isLocked: true  },
-        ],
-      },
-      {
-        id: 's2', title: 'Season 2 · The Ashworth Legacy',
-        episodes: [
-          { id: 'e1', title: 'Ep 1 · Blood and Ink', isLocked: true },
-        ],
-      },
-    ],
-  },
-  'prof-morley': {
-    name:    'Professor Henry Morley',
-    tagline: 'The Academic\'s Secret',
-    avatar:  '👨‍🏫',
-    seasons: [
-      {
-        id: 's1', title: 'Season 1 · The University',
-        episodes: [
-          { id: 'e1', title: 'Ep 1 · The Missing Papers', isLocked: false },
-          { id: 'e2', title: 'Ep 2 · A Familiar Face',    isLocked: true  },
-          { id: 'e3', title: 'Ep 3 · The Final Lecture',  isLocked: true  },
+          { id: 'ep-1', title: 'Ep 1 · The First Audience',   isLocked: false },
+          { id: 'ep-2', title: 'Ep 2 · Hidden Motives',        isLocked: true  },
+          { id: 'ep-3', title: 'Ep 3 · The Price of Loyalty',  isLocked: true  },
         ],
       },
     ],
