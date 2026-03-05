@@ -33,6 +33,7 @@ import { VideoView, useVideoPlayer } from 'expo-video';
 import { Story } from 'inkjs';
 import {
   doc, getDoc, setDoc, serverTimestamp, arrayUnion, Timestamp,
+  collection, getDocs, query, where,
 } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 import { useAuth } from '@/hooks/useAuth';
@@ -148,6 +149,25 @@ export default function EpisodeScreen() {
     initEpisode();
   }, [clientId, seasonId, episodeId]);
 
+  // Seeds any NPCs for this client that are not yet in the user's relationships[]
+  async function initRelationships(cId: string, uid: string) {
+    try {
+      const npcSnap  = await getDocs(query(collection(db, 'npcs'), where('appearsInClients', 'array-contains', cId)));
+      const userRef  = doc(db, 'users', uid);
+      const userSnap = await getDoc(userRef);
+      const existing: any[] = userSnap.data()?.relationships ?? [];
+      const existingIds = new Set(existing.map((r: any) => r.npcId));
+      const newRels = npcSnap.docs
+        .filter(d => !existingIds.has(d.id))
+        .map(d => ({ npcId: d.id, value: d.data().initialValue ?? 0, status: d.data().initialStatus ?? 'Neutral' }));
+      if (newRels.length > 0) {
+        await setDoc(userRef, { relationships: [...existing, ...newRels] }, { merge: true });
+      }
+    } catch (e) {
+      console.error('initRelationships failed:', e);
+    }
+  }
+
   async function initEpisode() {
     try {
       const epSnap = await getDoc(
@@ -169,6 +189,7 @@ export default function EpisodeScreen() {
       storyRef.current = story;
 
       if (user?.uid) {
+        await initRelationships(clientId, user.uid);
         const snap  = await getDoc(doc(db, 'users', user.uid, 'progress', clientId));
         const saved = snap.data();
         if (saved?.inkStateJson && saved?.lastEpisodeId === episodeId) {

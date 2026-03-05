@@ -33,21 +33,33 @@ interface ParsedTags {
   type?:    string;
   speaker?: string;
   emotion?: string;
-  clues:    string[];   // multiple # clue: tags allowed
+  clues:    string[];
 }
 
 function parseTags(tags: string[]): ParsedTags {
-  const result: ParsedTags = { clues: [] };
+  const r: ParsedTags = { clues: [] };
   for (const t of tags) {
-    const [key, ...rest] = t.split(':').map(s => s.trim());
-    const val = rest.join(':').trim();
-    if (key === 'scene')   result.scene   = val;
-    if (key === 'type')    result.type    = val;
-    if (key === 'speaker') result.speaker = val;
-    if (key === 'emotion') result.emotion = val;
-    if (key === 'clue')    result.clues.push(val);
+    const i = t.indexOf(':');
+    if (i === -1) continue;
+    const key = t.slice(0, i).trim();
+    const val = t.slice(i + 1).trim();
+    if (key === 'scene')   r.scene   = val;
+    if (key === 'type')    r.type    = val;
+    if (key === 'speaker') r.speaker = val;
+    if (key === 'emotion') r.emotion = val;
+    if (key === 'clue')    r.clues.push(val);
   }
-  return result;
+  return r;
+}
+
+function mergeTags(prev: ParsedTags, next: ParsedTags): ParsedTags {
+  return {
+    scene:   next.scene   ?? prev.scene,
+    type:    next.type    ?? prev.type,
+    speaker: next.speaker ?? prev.speaker,
+    emotion: next.emotion ?? prev.emotion,
+    clues:   next.clues,
+  };
 }
 
 const NPC_NAMES: Record<string, string> = {
@@ -101,30 +113,29 @@ export default function InkDemoScreen() {
         } catch (_) { /* no saved state — start fresh */ }
       }
 
-      advance(story);
+      advance(story, { clues: [] });
     }
     init();
   }, []);
 
-  // ── Advance story (shared by tap + choice selection) ─────────────────────
-  function advance(story: Story, choiceIndex?: number) {
-    if (choiceIndex !== undefined) {
-      story.ChooseChoiceIndex(choiceIndex);
+  // ── Advance story — ONE Continue() per tap, mergeTags carry-forward ──────
+  function advance(story: Story, prevTags: ParsedTags = { clues: [] }, choiceIndex?: number) {
+    if (choiceIndex !== undefined) story.ChooseChoiceIndex(choiceIndex);
+
+    if (!story.canContinue && story.currentChoices.length === 0) {
+      setComplete(true);
+      return;
     }
 
-    // Collect all text lines until next choice or end
-    let combinedText = '';
-    while (story.canContinue) {
-      combinedText += story.Continue();
-    }
+    const text    = story.canContinue ? story.Continue() : '';
+    const newTags = parseTags(story.currentTags ?? []);
+    const active  = mergeTags(prevTags, newTags);
 
-    const currentTags = parseTags(story.currentTags ?? []);
-
-    // Grant clues found via tags
-    if (currentTags.clues.length > 0) {
+    // Grant clues
+    if (newTags.clues.length > 0) {
       setCluesFound(prev => {
         const next = [...prev];
-        currentTags.clues.forEach(id => { if (!next.includes(id)) next.push(id); });
+        newTags.clues.forEach(id => { if (!next.includes(id)) next.push(id); });
         return next;
       });
     }
@@ -136,17 +147,25 @@ export default function InkDemoScreen() {
       vs['victoria_suspicion']  = story.variablesState['victoria_suspicion'];
       vs['clue_victoria_found'] = story.variablesState['clue_victoria_found'];
     } catch (_) {}
-
     setVars(vs);
-    setText(combinedText.trim());
-    setTags(currentTags);
 
-    if (currentTags.type === 'episode_end' || (!story.canContinue && story.currentChoices.length === 0)) {
+    // Auto-skip empty lines with no choices
+    if (!text.trim() && story.canContinue && story.currentChoices.length === 0) {
+      advance(story, active);
+      return;
+    }
+
+    if (active.type === 'episode_end') {
+      setText('');
+      setTags(active);
       setChoices([]);
       setComplete(true);
-    } else {
-      setChoices(story.currentChoices.map((c, i) => ({ text: c.text, index: i })));
+      return;
     }
+
+    setText(text.trim());
+    setTags(active);
+    setChoices(story.currentChoices.map((c, i) => ({ text: c.text, index: i })));
   }
 
   // ── Save state to Firestore ───────────────────────────────────────────────
@@ -238,7 +257,7 @@ export default function InkDemoScreen() {
                 key={c.index}
                 style={styles.choiceBtn}
                 activeOpacity={0.75}
-                onPress={() => storyRef.current && advance(storyRef.current, c.index)}
+                onPress={() => storyRef.current && advance(storyRef.current, tags, c.index)}
               >
                 <Text style={styles.choiceBtnText}>{c.text}</Text>
               </TouchableOpacity>
@@ -250,7 +269,7 @@ export default function InkDemoScreen() {
         {isDialogue && (
           <TouchableOpacity
             style={styles.tapHint}
-            onPress={() => storyRef.current && advance(storyRef.current)}
+            onPress={() => storyRef.current && advance(storyRef.current, tags)}
           >
             <Text style={styles.tapHintText}>Tap to continue ›</Text>
           </TouchableOpacity>
