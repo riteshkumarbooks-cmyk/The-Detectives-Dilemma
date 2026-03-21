@@ -12,7 +12,8 @@
 
 const LOCAL_SCENE_ASSETS: Record<string, number> = {
   // duchess-margaux — Season 1 — Episode 1
-  'duchess-margaux/season-1/ep-1/ep1_intro': require('../../assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/videos/scene1.png'),
+  // 'duchess-margaux/season-1/ep-1/ep1_intro': require('../../assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/videos/scene1.png'),
+  // ↑ Uncomment once scene1.png is dropped in the videos/ folder
 };
 
 /**
