@@ -38,8 +38,9 @@ import {
 } from '@/types/episode';
 
 // ── Scene video component ──────────────────────────────────────────────────
-function SceneVideo({ uri, onEnd }: { uri: string; onEnd: () => void }) {
-  const player = useVideoPlayer(uri, p => { p.loop = false; p.play(); });
+// uri accepts a string (remote URL) or a require() number (local bundled file)
+function SceneVideo({ uri, onEnd }: { uri: string | number; onEnd: () => void }) {
+  const player = useVideoPlayer(uri as any, p => { p.loop = false; p.play(); });
 
   useEffect(() => {
     const sub = player.addListener('playingChange', ({ isPlaying }) => {
@@ -84,7 +85,7 @@ export default function EpisodeScreen() {
   // Current scene
   const [scene,         setScene]         = useState<SceneNode | null>(null);
   const [sceneId,       setSceneId]       = useState('');
-  const [videoUri,      setVideoUri]      = useState<string | null>(null);
+  const [videoUri,      setVideoUri]      = useState<string | number | null>(null);
   const [showChoices,   setShowChoices]   = useState(false);
 
   // Image / dialogue scene state — string = remote URL, number = local require() asset
@@ -285,7 +286,8 @@ export default function EpisodeScreen() {
     applyEffects(vs.effects);
     applyClues(vs.clues);
     saveProgress();
-    setVideoUri(vs.videoUrl ?? null);
+    const localVid = resolveLocalSceneAsset(clientId, seasonId, episodeId, toSceneId);
+    setVideoUri(vs.videoUrl ?? localVid ?? null);
     setImageBgUri(null);
     setDialogueText('');
     setDialogueName('');
