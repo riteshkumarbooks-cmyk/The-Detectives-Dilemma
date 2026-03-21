@@ -31,6 +31,7 @@ import { Colors } from '@/constants/colors';
 import { INK_VAR_TO_NPC } from '@/config/storyMap';
 import { consumeMinigameResult } from '@/services/minigameResult';
 import { loadEpisodeGraph } from '@/services/graphLoader';
+import { resolveLocalSceneAsset } from '@/services/localAssets';
 import {
   EpisodeGraph, EpisodeState, SceneNode,
   VideoScene, ImageScene, DialogueScene, MinigameScene, ChoiceOption,
@@ -86,8 +87,8 @@ export default function EpisodeScreen() {
   const [videoUri,      setVideoUri]      = useState<string | null>(null);
   const [showChoices,   setShowChoices]   = useState(false);
 
-  // Image / dialogue scene state
-  const [imageBgUri,    setImageBgUri]    = useState<string | null>(null);
+  // Image / dialogue scene state — string = remote URL, number = local require() asset
+  const [imageBgUri,    setImageBgUri]    = useState<string | number | null>(null);
   const [dialogueText,  setDialogueText]  = useState('');
   const [dialogueName,  setDialogueName]  = useState('');
   const [sceneType,     setSceneType]     = useState<'video' | 'image' | 'dialogue' | 'minigame' | 'end'>('video');
@@ -254,7 +255,8 @@ export default function EpisodeScreen() {
       applyEffects(img.effects);
       applyClues(img.clues);
       saveProgress();
-      setImageBgUri(img.imageUrl ?? null);
+      const localImg = resolveLocalSceneAsset(clientId, seasonId, episodeId, toSceneId);
+      setImageBgUri(img.imageUrl ?? localImg ?? null);
       setVideoUri(null);
       setDialogueText(img.text ?? '');
       setDialogueName('');
@@ -466,7 +468,11 @@ export default function EpisodeScreen() {
         : sceneType === 'dialogue' && videoUri
           ? <SceneVideo uri={videoUri} onEnd={() => {}} />
           : imageBgUri
-            ? <Image source={{ uri: imageBgUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+            ? <Image
+                source={typeof imageBgUri === 'number' ? imageBgUri : { uri: imageBgUri }}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode="cover"
+              />
             : <View style={styles.bgDark} />
       }
       <View style={styles.overlay} />

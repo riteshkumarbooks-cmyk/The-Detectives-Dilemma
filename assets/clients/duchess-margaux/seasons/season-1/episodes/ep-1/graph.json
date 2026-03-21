@@ -3,10 +3,10 @@
   "startScene": "ep1_intro",
   "scenes": {
     "ep1_intro": {
-      "type": "video",
-      "videoUrl": null,
-      "_videoFile": "assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/videos/Scene1.mp4",
-      "_note": "Drop Scene1.mp4 in the videos/ folder. When Firebase Storage is ready, set videoUrl to the CDN URL and remove _videoFile.",
+      "type": "image",
+      "imageUrl": null,
+      "_imageFile": "assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/videos/scene1.png",
+      "_note": "Local file is gitignored. Drop scene1.png in the videos/ folder for local dev. Set imageUrl to CDN URL for production.",
       "next": "ep1_duchess_speaks"
     },
     "ep1_duchess_speaks": {
