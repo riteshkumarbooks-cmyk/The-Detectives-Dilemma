@@ -42,3 +42,20 @@ Pods/
 .idea/
 .vscode/
 scripts/service-account.json
+
+# ── Media — LOCAL ONLY, never commit ──────────────────────────────────────────
+# All image, audio, and video files under assets/clients/ are local dev assets.
+# In production these are served from Firebase Storage / CDN.
+# Drop files here freely — they will never be staged or pushed to GitHub.
+assets/clients/**/*.png
+assets/clients/**/*.jpg
+assets/clients/**/*.jpeg
+assets/clients/**/*.gif
+assets/clients/**/*.webp
+assets/clients/**/*.mp4
+assets/clients/**/*.mov
+assets/clients/**/*.avi
+assets/clients/**/*.mp3
+assets/clients/**/*.wav
+assets/clients/**/*.aac
+assets/clients/**/*.m4a
