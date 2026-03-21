@@ -5,7 +5,7 @@
 // In Phase 5, large stories can be fetched from S3 instead of bundled.
 
 const STORY_MAP: Record<string, object> = {
-  'duchess-margaux/ep-1': require('../../assets/stories/duchess-ep1.ink.json'),
+  'duchess-margaux/ep-1': require('../../assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/script.ink.json'),
 };
 
 export function getStoryJson(clientId: string, episodeId: string): object | null {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity,
-  ScrollView, ActivityIndicator,
+  ScrollView, ActivityIndicator, Image,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -30,10 +30,10 @@ interface Season {
 }
 
 interface ClientDetail {
-  name:    string;
-  tagline: string;
-  avatar:  string;
-  seasons: Season[];
+  name:      string;
+  tagline:   string;
+  avatarUrl: string | null;
+  seasons:   Season[];
 }
 
 interface ClueDetail {
@@ -53,10 +53,9 @@ interface NpcRel {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function avatarForClient(id: string): string {
-  const map: Record<string, string> = { 'duchess-margaux': '👑' };
-  return map[id] ?? '🕵️';
-}
+const LOCAL_AVATARS: Record<string, ReturnType<typeof require>> = {
+  'duchess-margaux': require('../../../assets/clients/duchess-margaux/margaux-avatar.png'),
+};
 
 function relLabel(v: number): { label: string; color: string } {
   if (v >= 50)  return { label: 'Trusted',  color: Colors.success };
@@ -123,7 +122,7 @@ export default function ClientDetailScreen() {
         })
       );
 
-      setClient({ name: d.name, tagline: d.tagline, avatar: avatarForClient(id), seasons });
+      setClient({ name: d.name, tagline: d.tagline, avatarUrl: d.avatarUrl ?? null, seasons });
       if (seasons.length > 0) setExpandedSeason(seasons[0].id);
     } catch (e) {
       console.error('fetchClient failed:', e);
@@ -245,7 +244,14 @@ export default function ClientDetailScreen() {
           <Text style={styles.backText}>‹ Clients</Text>
         </TouchableOpacity>
         <View style={styles.clientMeta}>
-          <Text style={styles.avatarEmoji}>{client.avatar}</Text>
+          <View style={styles.avatarBox}>
+            {client.avatarUrl
+              ? <Image source={{ uri: client.avatarUrl }} style={styles.avatarImage} />
+              : LOCAL_AVATARS[id]
+                ? <Image source={LOCAL_AVATARS[id]} style={styles.avatarImage} />
+                : <Text style={styles.avatarEmoji}>🕵️</Text>
+            }
+          </View>
           <View>
             <Text style={styles.clientName}>{client.name}</Text>
             <Text style={styles.tagline}>{client.tagline}</Text>
@@ -422,8 +428,10 @@ const styles = StyleSheet.create({
   header:     { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16 },
   backBtn:    { marginBottom: 12 },
   backText:   { fontSize: 15, color: Colors.accent, fontWeight: '600' },
-  clientMeta: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  avatarEmoji:{ fontSize: 40 },
+  clientMeta:  { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  avatarBox:   { width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.accent + '22', borderWidth: 1, borderColor: Colors.accent, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  avatarImage: { width: 56, height: 56, borderRadius: 28 },
+  avatarEmoji: { fontSize: 32 },
   clientName: { fontSize: 18, fontWeight: '800', color: Colors.textLight },
   tagline:    { fontSize: 13, color: Colors.accent, fontStyle: 'italic', marginTop: 2 },
 

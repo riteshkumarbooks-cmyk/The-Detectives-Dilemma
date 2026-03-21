@@ -467,31 +467,43 @@ Player's own name always displayed — detective template only affects appearanc
 - Firestore profile sync (cross-device persistence)
 - Home screen: detective standing in office with parallax depth effect
 
-### Phase 2: Character System & Navigation — IN PROGRESS 🔄
+### Phase 2: Character System & Navigation — COMPLETE ✅
 - [x] Bottom tab bar (Home | Clients | Profile | Gallery)
-- [x] Clients tab — client card grid (hardcoded, needs Firestore)
-- [x] Client detail screen — Episodes + Gallery inner tabs (hardcoded, needs Firestore)
-- [x] Profile tab — stats + relationship matrix (seeded to Firestore)
-- [x] Data model finalised — clients, seasons, episodes (scenes subcollection), npcs, entitlements
-- [x] Scene graph design: explicit `startSceneId`, scenes as subcollection (not array), sceneId-anchored S3 filenames
-- [ ] **NEXT:** Seed `clients/` + `npcs/` collections into Firestore
-- [ ] Wire `clients.tsx` and `client/[id].tsx` to read from Firestore
-- [ ] Firestore Security Rules updated for `clients/` and `npcs/`
+- [x] Clients tab — client card grid reading from Firestore
+- [x] Client detail screen — Episodes + Case Files + Gallery inner tabs
+- [x] Profile tab — stats + relationship matrix
+- [x] Data model finalised — clients, seasons, episodes, npcs, entitlements
+- [x] Seed `clients/` + `npcs/` collections into Firestore (`scripts/seed-firestore.mjs`)
+- [x] Wire `clients.tsx` and `client/[id].tsx` to read from Firestore
+- [x] Firestore Security Rules for `clients/` and `npcs/`
 
-### Phase 3: Episode Framework & Save System — PENDING ⏳
-- Episode playback engine (scenes: image → dialogue → choice → next)
-- Save progress to `users/{uid}/progress/{clientId}` after each episode
+### Phase 3: Episode Playback Chain — IN PROGRESS 🔄
+- [x] Graph-based episode player (`app/(main)/episode.tsx`) — Ink removed
+- [x] Save / resume progress (`users/{uid}/progress/{clientId}.graphStateJson`)
+- [x] NPC relationship init + sync per episode
+- [x] Clue tracking + Case Files tab
+- [x] Mini-game routing framework (`app/(main)/minigame.tsx`)
+- [x] Client avatar support — local bundled + Firestore URL fallback
+- [ ] Image scene type + dialogue scene type (static bg + text + audio)
+- [ ] Audio playback via expo-av (`_audio.mp3` alongside scenes)
+- [ ] Populate duchess ep-1 graph with real dialogue from story
+- [ ] Hidden Objects mini-game (replace Win/Lose stub)
+- [ ] Scene fade transitions
+- [ ] Seed clues collection (`scripts/seed-clues.mjs`)
+
+### Phase 4: Mini-Games, Entitlements & Cat Assistant — PENDING ⏳
+- RPS Combat + Interrogation mini-games
 - Entitlements service (`src/services/entitlements.ts`) — free/owned/ads/locked
 - Paywall UI: "Buy Season" (IAP) + "Watch 5 Ads" options
-- Wire episode order → ad/purchase gate enforcement
-
-### Phase 4: Mini-Games & Interactive Systems — PENDING ⏳
-- Hidden Objects, Rock-Paper-Scissors Combat, Interrogation mini-games
-- Dialogue system with branching logic
 - Talking cat assistant with contextual hints
 
-### Phase 5: Media, Gallery & Polish — PENDING ⏳
-- S3 + Cloudflare CDN for media assets
+### Phase 5: Productionisation & Media Pipeline — PENDING ⏳
+- **Media migration to Firebase Storage / CDN:**
+  All client avatars, episode videos, scene images and audio are bundled locally or
+  kept as `null` during development. Before app store release, migrate all media to
+  Firebase Storage (or Cloudflare R2 / AWS S3 + CloudFront). Update `avatarUrl`,
+  `mediaBaseUrl`, and `graphUrl` fields on Firestore docs to point to CDN URLs.
+  Local `assets/clients/` bundles remain as offline fallback only.
 - Gallery tab (video player, photo viewer, favorites)
 - Google Sign-In + Apple Sign-In (EAS Build required)
 - Analytics (Sentry), store compliance, TestFlight beta

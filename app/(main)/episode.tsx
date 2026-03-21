@@ -5,6 +5,8 @@
 //
 // Node types:
 //   VideoScene     → plays video (or dark bg if null), then choices overlay or auto-advance
+//   ImageScene     → static bg image + optional narration text, tap anywhere to advance
+//   DialogueScene  → NPC portrait/lip-sync video + speaker name + subtitle, tap to advance
 //   MinigameScene  → navigates to /(main)/minigame, returns via minigameResult service
 //   EpisodeEndScene → marks episode complete, saves to Firestore
 //
@@ -13,9 +15,10 @@
 
 import { useRef, useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity,
+  View, Text, StyleSheet, TouchableOpacity, Image,
   SafeAreaView, ActivityIndicator, Modal, ScrollView,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import {
@@ -30,7 +33,7 @@ import { consumeMinigameResult } from '@/services/minigameResult';
 import { loadEpisodeGraph } from '@/services/graphLoader';
 import {
   EpisodeGraph, EpisodeState, SceneNode,
-  VideoScene, MinigameScene, ChoiceOption,
+  VideoScene, ImageScene, DialogueScene, MinigameScene, ChoiceOption,
 } from '@/types/episode';
 
 // ── Scene video component ──────────────────────────────────────────────────
@@ -70,6 +73,7 @@ export default function EpisodeScreen() {
     choicesMade:    {},
   });
   const pendingMinigame = useRef(false);
+  const audioRef        = useRef<Audio.Sound | null>(null);
 
   const [episodeTitle, setEpisodeTitle] = useState('');
   const [loading,      setLoading]      = useState(true);
@@ -77,19 +81,26 @@ export default function EpisodeScreen() {
   const [saving,       setSaving]       = useState(false);
 
   // Current scene
-  const [scene,       setScene]       = useState<SceneNode | null>(null);
-  const [sceneId,     setSceneId]     = useState('');
-  const [videoUri,    setVideoUri]    = useState<string | null>(null);
-  const [showChoices, setShowChoices] = useState(false);
+  const [scene,         setScene]         = useState<SceneNode | null>(null);
+  const [sceneId,       setSceneId]       = useState('');
+  const [videoUri,      setVideoUri]      = useState<string | null>(null);
+  const [showChoices,   setShowChoices]   = useState(false);
+
+  // Image / dialogue scene state
+  const [imageBgUri,    setImageBgUri]    = useState<string | null>(null);
+  const [dialogueText,  setDialogueText]  = useState('');
+  const [dialogueName,  setDialogueName]  = useState('');
+  const [sceneType,     setSceneType]     = useState<'video' | 'image' | 'dialogue' | 'minigame' | 'end'>('video');
 
   // Clue tracking
   const [cluesFound, setCluesFound] = useState<string[]>([]);
   const [showClues,  setShowClues]  = useState(false);
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Init & cleanup ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!clientId || !seasonId || !episodeId) return;
     initEpisode();
+    return () => { stopAudio(); };
   }, [clientId, seasonId, episodeId]);
 
   // Seeds any NPCs for this client that are not yet in the user's relationships[]
@@ -179,6 +190,25 @@ export default function EpisodeScreen() {
     }, [scene])
   );
 
+  // ── Audio helpers ─────────────────────────────────────────────────────────
+  async function stopAudio() {
+    if (audioRef.current) {
+      try { await audioRef.current.stopAsync(); await audioRef.current.unloadAsync(); } catch (_) {}
+      audioRef.current = null;
+    }
+  }
+
+  async function playAudio(url: string) {
+    await stopAudio();
+    try {
+      const { sound } = await Audio.Sound.createAsync({ uri: url });
+      audioRef.current = sound;
+      await sound.playAsync();
+    } catch (e) {
+      console.warn('Audio playback failed:', e);
+    }
+  }
+
   // ── Core graph traversal ──────────────────────────────────────────────────
   function advance(toSceneId: string) {
     const graph = graphRef.current;
@@ -194,14 +224,17 @@ export default function EpisodeScreen() {
     setSceneId(toSceneId);
     setScene(node);
     setShowChoices(false);
+    stopAudio();
 
     if (node.type === 'episode_end') {
+      setSceneType('end');
       handleEpisodeEnd();
       return;
     }
 
     if (node.type === 'minigame') {
       const mg = node as MinigameScene;
+      setSceneType('minigame');
       saveProgress();
       pendingMinigame.current = true;
       router.push({
@@ -215,12 +248,45 @@ export default function EpisodeScreen() {
       return;
     }
 
-    // VideoScene
+    if (node.type === 'image') {
+      const img = node as ImageScene;
+      setSceneType('image');
+      applyEffects(img.effects);
+      applyClues(img.clues);
+      saveProgress();
+      setImageBgUri(img.imageUrl ?? null);
+      setVideoUri(null);
+      setDialogueText(img.text ?? '');
+      setDialogueName('');
+      if (img.audioUrl) playAudio(img.audioUrl);
+      return;
+    }
+
+    if (node.type === 'dialogue') {
+      const dl = node as DialogueScene;
+      setSceneType('dialogue');
+      applyEffects(dl.effects);
+      applyClues(dl.clues);
+      saveProgress();
+      setDialogueText(dl.text);
+      setDialogueName(dl.speaker);
+      // Dialogue can have a lip-sync video OR a portrait image
+      setVideoUri(dl.videoUrl ?? null);
+      setImageBgUri(dl.imageUrl ?? null);
+      if (dl.audioUrl) playAudio(dl.audioUrl);
+      return;
+    }
+
+    // VideoScene (default)
+    setSceneType('video');
     const vs = node as VideoScene;
     applyEffects(vs.effects);
     applyClues(vs.clues);
     saveProgress();
     setVideoUri(vs.videoUrl ?? null);
+    setImageBgUri(null);
+    setDialogueText('');
+    setDialogueName('');
 
     if (!vs.videoUrl) {
       // No video yet — show choices immediately or chain to next scene
@@ -252,6 +318,23 @@ export default function EpisodeScreen() {
     applyClues(option.clues);
     saveProgress();
     advance(option.next);
+  }
+
+  // Tap-to-advance for image and dialogue scenes
+  function onTapScene() {
+    if (sceneType === 'image') {
+      const img = scene as ImageScene;
+      if (img?.next) advance(img.next);
+      return;
+    }
+    if (sceneType === 'dialogue') {
+      const dl = scene as DialogueScene;
+      if (dl?.choices?.length) {
+        setShowChoices(true);
+      } else if (dl?.next) {
+        advance(dl.next);
+      }
+    }
   }
 
   // ── Variable effects / clues ───────────────────────────────────────────────
@@ -368,17 +451,30 @@ export default function EpisodeScreen() {
   }
 
   const vs = scene as VideoScene | null;
+  const dl = scene as DialogueScene | null;
+
+  // Choices come from VideoScene or DialogueScene
+  const activeChoices = (sceneType === 'video' ? vs?.choices : dl?.choices) ?? [];
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
 
-      {/* Background: video or dark fill */}
-      {videoUri
+      {/* Background layer */}
+      {sceneType === 'video' && videoUri
         ? <SceneVideo uri={videoUri} onEnd={onVideoEnd} />
-        : <View style={styles.bgDark} />
+        : sceneType === 'dialogue' && videoUri
+          ? <SceneVideo uri={videoUri} onEnd={() => {}} />
+          : imageBgUri
+            ? <Image source={{ uri: imageBgUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+            : <View style={styles.bgDark} />
       }
       <View style={styles.overlay} />
+
+      {/* Tap-to-advance hitbox for image / dialogue scenes */}
+      {(sceneType === 'image' || sceneType === 'dialogue') && !showChoices && (
+        <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={onTapScene} />
+      )}
 
       {/* Top bar */}
       <SafeAreaView style={styles.topBar}>
@@ -402,18 +498,29 @@ export default function EpisodeScreen() {
         </View>
       )}
 
-      {/* Skip button — shown when video is playing */}
-      {videoUri && !showChoices && (
+      {/* Skip button — shown when cinematic video is playing */}
+      {sceneType === 'video' && videoUri && !showChoices && (
         <TouchableOpacity style={styles.skipBtn} onPress={onVideoEnd}>
           <Text style={styles.skipText}>Skip ›</Text>
         </TouchableOpacity>
       )}
 
-      {/* Choice overlay — slides up after video ends (or immediately if no video) */}
-      {showChoices && vs?.choices && (
+      {/* Dialogue overlay — speaker name + text (image or dialogue scene) */}
+      {(sceneType === 'dialogue' || (sceneType === 'image' && dialogueText)) && !showChoices && (
+        <View style={styles.dialogueWrap} pointerEvents="none">
+          {dialogueName ? (
+            <Text style={styles.speakerName}>{dialogueName}</Text>
+          ) : null}
+          <Text style={styles.dialogueText}>{dialogueText}</Text>
+          <Text style={styles.tapHint}>Tap to continue</Text>
+        </View>
+      )}
+
+      {/* Choice overlay — slides up after video/dialogue ends */}
+      {showChoices && activeChoices.length > 0 && (
         <View style={styles.choiceWrap}>
           <Text style={styles.choicePrompt}>What do you do?</Text>
-          {vs.choices.map((opt, i) => (
+          {activeChoices.map((opt, i) => (
             <TouchableOpacity key={i} style={styles.choiceBtn} activeOpacity={0.75}
               onPress={() => onChoice(opt)}>
               <Text style={styles.choiceBtnText}>{opt.text}</Text>
@@ -483,6 +590,12 @@ const styles = StyleSheet.create({
   completeBtn:      { backgroundColor: Colors.accent, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 40, marginTop: 16 },
   completeBtnText:  { fontSize: 16, fontWeight: '800', color: '#0D0D0D' },
   errorText:        { color: Colors.textMuted, textAlign: 'center', padding: 40, lineHeight: 24 },
+
+  // Dialogue / image scene
+  dialogueWrap:  { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(13,13,13,0.88)', borderTopWidth: 1, borderTopColor: Colors.border, padding: 20, paddingBottom: 40, gap: 8 },
+  speakerName:   { fontSize: 11, fontWeight: '800', color: Colors.accent, letterSpacing: 1.5, textTransform: 'uppercase' },
+  dialogueText:  { fontSize: 16, color: Colors.textLight, lineHeight: 24 },
+  tapHint:       { fontSize: 11, color: Colors.textMuted, alignSelf: 'flex-end', marginTop: 4 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
   modalCard:    { backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, maxHeight: '70%' },

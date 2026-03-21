@@ -2,7 +2,7 @@ import { EpisodeGraph } from '@/types/episode';
 
 // Bundled fallbacks (offline / dev — no graphUrl yet)
 const BUNDLED: Record<string, EpisodeGraph> = {
-  'duchess-margaux/ep-1': require('../../assets/episodes/duchess-ep1-graph.json'),
+  'duchess-margaux/ep-1': require('../../assets/clients/duchess-margaux/seasons/season-1/episodes/ep-1/graph.json'),
 };
 
 /**

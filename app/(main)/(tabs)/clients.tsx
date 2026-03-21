@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { collection, getDocs, orderBy, query } from 'firebase/firestore';
@@ -20,7 +21,7 @@ export interface Client {
   description:     string;
   isLocked:        boolean;
   unlockCondition: string;
-  avatar:          string;
+  avatarUrl:       string | null;   // S3 URL — null until image is uploaded
   order:           number;
 }
 
@@ -32,7 +33,7 @@ const LOCKED_PLACEHOLDER: Client = {
   description:     'This client will reveal themselves once you crack your first case.',
   isLocked:        true,
   unlockCondition: 'Complete Season 1 of any case',
-  avatar:          '🔒',
+  avatarUrl:       null,
   order:           999,
 };
 
@@ -40,13 +41,12 @@ function releaseStatusToLocked(status: string): boolean {
   return status === 'coming_soon';
 }
 
-function avatarForClient(id: string): string {
-  // Emoji avatars until real S3 art is ready
-  const map: Record<string, string> = {
-    'duchess-margaux': '👑',
-  };
-  return map[id] ?? '🕵️';
-}
+// Local bundled avatars — used when Firestore avatarUrl is null.
+// Drop the image in assets/clients/ and add an entry here.
+// When Firebase Storage is ready, set avatarUrl on the Firestore doc and this map is bypassed.
+const LOCAL_AVATARS: Record<string, ReturnType<typeof require>> = {
+  'duchess-margaux': require('../../../assets/clients/duchess-margaux/margaux-avatar.png'),
+};
 
 export default function ClientsScreen() {
   const router = useRouter();
@@ -67,7 +67,7 @@ export default function ClientsScreen() {
             description:     d.description,
             isLocked:        releaseStatusToLocked(d.releaseStatus),
             unlockCondition: '',
-            avatar:          avatarForClient(doc.id),
+            avatarUrl:       d.avatarUrl ?? null,
             order:           d.order,
           };
         });
@@ -111,7 +111,14 @@ export default function ClientsScreen() {
             >
               {/* Avatar */}
               <View style={[styles.avatarBox, item.isLocked && styles.avatarBoxLocked]}>
-                <Text style={styles.avatarEmoji}>{item.avatar}</Text>
+                {item.isLocked
+                  ? <Text style={styles.avatarEmoji}>🔒</Text>
+                  : item.avatarUrl
+                    ? <Image source={{ uri: item.avatarUrl }} style={styles.avatarImage} />
+                    : LOCAL_AVATARS[item.id]
+                      ? <Image source={LOCAL_AVATARS[item.id]} style={styles.avatarImage} />
+                      : <Text style={styles.avatarEmoji}>🕵️</Text>
+                }
               </View>
 
               {/* Info */}
@@ -172,6 +179,7 @@ const styles = StyleSheet.create({
     borderColor:     Colors.border,
     backgroundColor: Colors.surfaceElevated,
   },
+  avatarImage: { width: 60, height: 60, borderRadius: 30 },
   avatarEmoji: { fontSize: 28 },
 
   info:       { flex: 1, gap: 4 },
